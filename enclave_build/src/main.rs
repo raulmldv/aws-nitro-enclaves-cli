@@ -94,6 +94,26 @@ fn main() {
                 .required(false)
                 .conflicts_with("build"),
         )
+        .arg(
+            Arg::with_name("image_name")
+                .long("name")
+                .help("Name for enclave image")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("image_version")
+                .long("version")
+                .short("v")
+                .help("Version of the enclave image")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("metadata")
+                .long("metadata")
+                .short("m")
+                .help("Path to JSON containing the custom metadata provided by the user.")
+                .takes_value(true),
+        )
         .get_matches();
 
     let docker_image = matches.value_of("docker_image").unwrap();
@@ -109,6 +129,18 @@ fn main() {
     };
     let private_key = match matches.value_of("private_certificate") {
         Some(key) => Some(key.to_string()),
+        None => None,
+    };
+    let img_name = match matches.value_of("image_name") {
+        Some(name) => Some(name.to_string()),
+        None => None,
+    };
+    let img_version = match matches.value_of("image_version") {
+        Some(version) => Some(version.to_string()),
+        None => None,
+    };
+    let metadata = match matches.value_of("metadata") {
+        Some(metadata) => Some(metadata.to_string()),
         None => None,
     };
     let mut output = OpenOptions::new()
@@ -129,6 +161,9 @@ fn main() {
         ".".to_string(),
         &signing_certificate,
         &private_key,
+        &img_name,
+        &img_version,
+        &metadata,
     )
     .unwrap();
 
