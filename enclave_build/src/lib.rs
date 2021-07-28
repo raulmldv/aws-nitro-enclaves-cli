@@ -10,7 +10,7 @@ mod yaml_generator;
 
 use docker::DockerUtil;
 use eif_defs::EIF_HDR_ARCH_ARM64;
-use eif_utils::{EifBuilder, SignEnclaveInfo};
+use eif_utils::{EifBuilder, SignEnclaveInfo, EifIdentityInfo};
 use sha2::Digest;
 use std::collections::BTreeMap;
 use yaml_generator::YamlGenerator;
@@ -26,6 +26,7 @@ pub struct Docker2Eif<'a> {
     artifacts_prefix: String,
     output: &'a mut File,
     sign_info: Option<SignEnclaveInfo>,
+    eif_data: EifIdentityInfo,
 }
 
 #[derive(Debug, PartialEq)]
@@ -38,6 +39,8 @@ pub enum Docker2EifError {
     KernelPathError,
     LinuxkitExecError,
     LinuxkitPathError,
+    MetadataPathError,
+    MetadataFileError,
     ArtifactsPrefixError,
     RamfsError,
     RemoveFileError,
@@ -58,6 +61,9 @@ impl<'a> Docker2Eif<'a> {
         artifacts_prefix: String,
         certificate_path: &Option<String>,
         key_path: &Option<String>,
+        img_name: &Option<String>,
+        img_version: &Option<String>,
+        meta_file_path: &Option<String>,
     ) -> Result<Self, Docker2EifError> {
         let docker = DockerUtil::new(docker_image.clone());
 
@@ -72,6 +78,35 @@ impl<'a> Docker2Eif<'a> {
         } else if !Path::new(&artifacts_prefix).is_dir() {
             return Err(Docker2EifError::ArtifactsPrefixError);
         }
+
+        let meta_file = match meta_file_path {
+            Some(meta) => {
+                if !Path::new(&meta).is_file() {
+                    return Err(Docker2EifError::MetadataPathError);
+                } else {
+                    Some(
+                        File::open(meta.clone())
+                            .map_err(|e| {
+                                eprintln!("Cannot open metadata file: {}", e);
+                                Docker2EifError::MetadataFileError
+                            })?
+                    )
+                }
+            },
+            None => None,
+        };
+
+        // TODO: set default values for imgage name and version
+        let default = &"default".to_string();
+        let img_name = match img_name {
+            Some(name) => name,
+            None => default,
+        };
+        let img_version = match img_version {
+            Some(version) => version,
+            None => default,
+        };
+
 
         let sign_info = match (certificate_path, key_path) {
             (None, None) => None,
@@ -93,6 +128,11 @@ impl<'a> Docker2Eif<'a> {
             output,
             artifacts_prefix,
             sign_info,
+            eif_data: EifIdentityInfo::new(
+                img_name.clone(),
+                img_version.clone(),
+                meta_file,
+            )
         })
     }
 
@@ -118,6 +158,7 @@ impl<'a> Docker2Eif<'a> {
     }
 
     pub fn create(&mut self) -> Result<BTreeMap<String, String>, Docker2EifError> {
+        eprintln!("Metadata: {:?}", self.eif_data);
         let (cmd_file, env_file) = self.docker.load().map_err(|e| {
             eprintln!("Docker error: {:?}", e);
             Docker2EifError::DockerError
