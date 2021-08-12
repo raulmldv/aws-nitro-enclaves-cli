@@ -11,6 +11,7 @@ use eif_defs::{
 use openssl::ec::EcKey;
 use serde::{Deserialize, Serialize};
 use serde_cbor::{from_slice, to_vec};
+use serde_json::Value;
 use sha2::{Digest, Sha384};
 use std::collections::BTreeMap;
 
@@ -26,11 +27,18 @@ use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fmt::Debug;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write, BufReader, BufRead};
 use std::mem::size_of;
 use std::path::Path;
+use std::time::SystemTime;
+use chrono::{DateTime, Utc};
 
 pub const DEFAULT_SECTIONS_COUNT: u16 = 2;
+pub const NITROCLI_SPECS_PATH: &str = "../../SPECS/aws-nitro-enclaves-cli.spec";
+#[cfg(target_arch = "x86_64")]
+pub const KERNEL_CONFIG_PATH: &str = "../../blobs/x86_64/bzImage.config";
+#[cfg(target_arch = "aarch64")]
+pub const KERNEL_CONFIG_PATH: &str = "../../blobs/aarch64/bzImage.config";
 
 #[derive(Clone, Debug)]
 pub struct SignEnclaveInfo {
@@ -109,24 +117,54 @@ pub fn get_pcrs<T: Digest + Debug + Write + Clone>(
     Ok(measurements)
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Metadata {
+    #[serde(flatten)]
+    /// Metadata generated at every build automatically
+    pub generated_meta: BTreeMap<String, String>,
+    #[serde(rename = "DockerInfo")]
+    /// Information about the docker image
+    pub docker_info: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(flatten)]
+    /// Metadata provided by the user
+    pub custom_meta: Option<Value>,
+}
+
+impl Metadata {
+    pub fn new(
+        generated_meta: BTreeMap<String, String>,
+        docker_info: Value,
+        custom_meta: Option<Value>,
+    ) -> Self {
+        Metadata {
+            generated_meta,
+            docker_info,
+            custom_meta,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct EifIdentityInfo {
     pub img_name: String,
     pub img_version: String,
-    pub metadata: Option<File>,
+    pub metadata_path: Option<String>,
+    pub docker_info: Value,
 }
 
 impl EifIdentityInfo {
     pub fn new(
         img_name: String,
         img_version: String,
-        metadata: Option<File>,
+        metadata_path: Option<String>,
+        docker_info: Value,
     ) -> Self {
         EifIdentityInfo {
             img_name,
             img_version,
-            metadata,
+            metadata_path,
+            docker_info,
         }
     }
 }
@@ -151,6 +189,8 @@ pub struct EifBuilder<T: Digest + Debug + Write + Clone> {
     /// Hash the signing certificate
     pub certificate_hasher: EifHasher<T>,
     hasher_template: T,
+    /// Metadata of the EIF
+    eif_data: EifIdentityInfo,
     eif_crc: crc32::Digest,
 }
 
@@ -161,6 +201,7 @@ impl<T: Digest + Debug + Write + Clone> EifBuilder<T> {
         sign_info: Option<SignEnclaveInfo>,
         hasher: T,
         flags: u16,
+        eif_data: EifIdentityInfo,
     ) -> Self {
         let kernel_file = File::open(kernel_path).expect("Invalid kernel path");
         let cmdline = CString::new(cmdline).expect("Invalid cmdline");
@@ -183,6 +224,7 @@ impl<T: Digest + Debug + Write + Clone> EifBuilder<T> {
             certificate_hasher: EifHasher::new_without_cache(hasher.clone())
                 .expect("Could not create certificate hasher"),
             hasher_template: hasher,
+            eif_data,
             eif_crc: crc32::Digest::new_with_initial(crc32::IEEE, 0),
         }
     }
@@ -523,6 +565,40 @@ impl<T: Digest + Debug + Write + Clone> EifBuilder<T> {
         }
     }
 
+    pub fn write_metadata(&mut self) {
+        eprintln!("Image name: {}", self.eif_data.img_name);
+        eprintln!("Image version: {}", self.eif_data.img_version);
+
+        let generated_meta = self.get_generated_meta();
+
+        let mut custom_meta: Option<serde_json::Value> = None;
+        match &self.eif_data.metadata_path {
+            Some(meta_path) => {
+                let specs_file = File::open(meta_path)
+                    .expect("Failed to opens custom metadata file.");
+                custom_meta = Some(
+                    serde_json::from_reader(specs_file)
+                    .expect("Failed to deserialize json.")
+                );
+            },
+            None => {}
+        }
+
+        let metadata = Metadata::new(
+            generated_meta,
+            self.eif_data.docker_info.clone(),
+            custom_meta,
+        );
+
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&metadata)
+                .expect("Failed to print custom metadata.")
+                .as_str(),
+        );
+
+    }
+
     pub fn write_to(&mut self, output_file: &mut File) -> BTreeMap<String, String> {
         self.measure();
         let measurements = get_pcrs(
@@ -543,7 +619,56 @@ impl<T: Digest + Debug + Write + Clone> EifBuilder<T> {
         self.write_cmdline(output_file);
         self.write_ramdisks(output_file);
         self.write_signature(output_file);
+        self.write_metadata();
         measurements
+    }
+
+    pub fn get_generated_meta(&mut self) -> BTreeMap<String, String> {
+        let mut meta = BTreeMap::new();
+
+        let time = SystemTime::now();
+        let time: DateTime<Utc> = time.into();
+        meta.insert("BuildTime".to_string(), time.to_rfc3339());
+
+        // Read aws-nitro-enclaves-cli.spec file and parse the lines that contain:
+        // Name:      aws-nitro-enclaves-cli
+        // Version:   1.0.12
+        let specs_file = File::open(NITROCLI_SPECS_PATH).expect("Failed to open NitroCLI specs file.");
+        let spec_lines = BufReader::new(specs_file).lines();
+        let mut tool_name = String::new();
+        let mut tool_version = String::new();
+
+        for line in spec_lines {
+            let line = line.expect("Failed to extract line from specs");
+            let clean_line = line.replace(' ', "");
+            let split_line: Vec<&str> = clean_line.split(':').collect();
+            
+            if line.contains("Name:") {    
+                tool_name = split_line[1].to_string();
+            } else if line.contains("Version:") {
+                tool_version = split_line[1].to_string();
+                break;
+            }
+        }
+
+        meta.insert("BuildTool".to_string(), tool_name);
+        meta.insert("BuildToolVersion".to_string(), tool_version);
+
+        let config_file = File::open(KERNEL_CONFIG_PATH).expect("Failed to open kernel image config file.");
+        let os_string: String = BufReader::new(config_file)
+            .lines()
+            .nth(2)
+            .unwrap()
+            .expect("Failed to read kernel config file.");
+        
+        // Extract OS and version from line format:
+        // ' # Linux/x86_64 4.14.177-104.253.amzn2.x86_64 Kernel Configuration '
+        let sep: Vec<char> = vec![' ', '/', '-'];
+        let os_words: Vec<&str> = os_string.split(&sep[..]).collect();
+        meta.insert("OperatingSystem".to_string(), os_words[1].to_string());
+        meta.insert("KernelVersion".to_string(), os_words[3].to_string());
+
+        meta
     }
 
     pub fn measure(&mut self) {
@@ -645,11 +770,16 @@ pub struct EifReader {
     pub app_hasher: EifHasher<Sha384>,
     /// Hash the signing certificate
     pub cert_hasher: EifHasher<Sha384>,
+    pub eif_crc: u32,
+    pub sign_check: Option<bool>,
 }
 
 impl EifReader {
-    /// Reads EIF and extracts section to be written in the hashers
+    /// Reads EIF and extracts sections to be written in the hashers based
+    /// on section type. Also writes sections in the eif_crc, excluding the
+    /// CRC from the header
     pub fn from_eif(eif_path: String) -> Result<Self, String> {
+        let mut eif_crc = crc32::Digest::new_with_initial(crc32::IEEE, 0);
         let mut curr_seek = 0;
         let mut eif_file =
             File::open(eif_path).map_err(|e| format!("Failed to open the EIF file: {:?}", e))?;
@@ -659,9 +789,13 @@ impl EifReader {
         eif_file
             .read_exact(&mut header_buf)
             .map_err(|e| format!("Error while reading EIF header: {:?}", e))?;
+
+        // Exclude last field of header which is CRC
+        let len_without_crc = header_buf.len() - size_of::<u32>();
+        eif_crc.write(&header_buf[..len_without_crc]);
+
         let header = EifHeader::from_be_bytes(&header_buf)
             .map_err(|e| format!("Error while parsing EIF header: {:?}", e))?;
-
         curr_seek += EifHeader::size();
         eif_file
             .seek(SeekFrom::Start(curr_seek as u64))
@@ -687,6 +821,7 @@ impl EifReader {
         {
             let section = EifSectionHeader::from_be_bytes(&section_buf)
                 .map_err(|e| format!("Error extracting EIF section header: {:?}", e))?;
+            eif_crc.write(&section_buf);
 
             let mut buf = vec![0u8; section.section_size as usize];
             curr_seek += EifSectionHeader::size();
@@ -700,6 +835,7 @@ impl EifReader {
             eif_file
                 .seek(SeekFrom::Start(curr_seek as u64))
                 .map_err(|e| format!("Failed to seek after EIF section: {:?}", e))?;
+            eif_crc.write(&buf);
 
             match section.section_type {
                 EifSectionType::EifSectionKernel => {
@@ -743,6 +879,8 @@ impl EifReader {
             bootstrap_hasher,
             app_hasher,
             cert_hasher,
+            eif_crc: eif_crc.sum32(),
+            sign_check: None,
         })
     }
 
@@ -751,8 +889,13 @@ impl EifReader {
         self.header
     }
 
+    /// Compare header CRC to the one we computed
+    pub fn check_crc(&self) -> bool {
+        self.header.eif_crc32 == self.eif_crc
+    }
+
     /// Extract signature section from EIF and parse the signing certificate
-    pub fn get_certificate_info(&self) -> Result<SignCertificateInfo, String> {
+    pub fn get_certificate_info(&mut self, measurements: BTreeMap<String, String>) -> Result<SignCertificateInfo, String> {
         let signature_buf = match &self.signature_section {
             Some(section) => section,
             None => {
@@ -775,9 +918,28 @@ impl EifReader {
             );
         }
 
+        let algorithm = format!("{:#?}", cert.signature_algorithm().object());
+
+        // Get measured PCR0 signature payload
+        let pcr_info = PcrInfo::new(
+            0, 
+            hex::decode(measurements.get("PCR0").unwrap()).unwrap());
+        let measured_payload = to_vec(&pcr_info).expect("Could not serialize PCR info");
+        
+        // Extract public key from certificate and convert to EcKey
+        let public_key = &cert.public_key()
+            .map_err(|e| format!("Failed to get public key: {:?}", e))?;
+        let coses_key = EcKey::public_key_from_pem(&public_key.public_key_to_pem().unwrap()[..]).unwrap();
+        
+        // Deserialize COSES signature and extract the payload using the public key
+        let pcr_sign = COSESign1::from_bytes(&des_sign[0].signature[..]).unwrap();
+        let coses_payload = pcr_sign.get_payload(Some(coses_key.as_ref())).unwrap();
+
+        self.sign_check = Some(measured_payload == coses_payload);
+
         return Ok(SignCertificateInfo {
             issuer_name,
-            algorithm: format!("{:#?}", cert.signature_algorithm().object()),
+            algorithm,
             not_before: format!("{:#?}", cert.not_before()),
             not_after: format!("{:#?}", cert.not_after()),
             // Change format from [\  XX, \  X, ..] to XX:XX:XX...

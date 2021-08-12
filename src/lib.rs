@@ -197,11 +197,13 @@ pub fn describe_eif(eif_path: String) -> NitroCliResult<DescribeEifInfo> {
         EnclaveBuildInfo::new(measurements.clone()),
         false,
         None,
+        eif_reader.check_crc(),
+        None,
     );
 
     // Check if signature section is present
     if measurements.get(&"PCR8".to_string()).is_some() {
-        let cert_info = eif_reader.get_certificate_info().map_err(|err| {
+        let cert_info = eif_reader.get_certificate_info(measurements).map_err(|err| {
             new_nitro_cli_failure!(
                 &format!("Failed to get certificate sigining info: {:?}", err),
                 NitroCliErrorEnum::EifParsingError
@@ -209,6 +211,7 @@ pub fn describe_eif(eif_path: String) -> NitroCliResult<DescribeEifInfo> {
         })?;
         info.is_signed = true;
         info.cert_info = Some(cert_info);
+        info.sign_check = eif_reader.sign_check;
     }
 
     println!(
