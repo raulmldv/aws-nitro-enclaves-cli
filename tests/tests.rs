@@ -646,6 +646,9 @@ mod tests {
             output: eif_path.to_str().unwrap().to_string(),
             signing_certificate: None,
             private_key: None,
+            img_name: None,
+            img_version: None,
+            metadata: None,
         };
 
         build_from_docker(
@@ -654,6 +657,9 @@ mod tests {
             &args.output,
             &args.signing_certificate,
             &args.private_key,
+            &args.img_name,
+            &args.img_version,
+            &args.metadata,
         )
         .expect("Docker build failed")
         .1;
@@ -769,6 +775,9 @@ mod tests {
             output: eif_path.to_str().unwrap().to_string(),
             signing_certificate: None,
             private_key: None,
+            img_name: None,
+            img_version: None,
+            metadata: None,
         };
 
         build_from_docker(
@@ -777,6 +786,9 @@ mod tests {
             &args.output,
             &args.signing_certificate,
             &args.private_key,
+            &args.img_name,
+            &args.img_version,
+            &args.metadata,
         )
         .expect("Docker build failed");
 
@@ -785,6 +797,8 @@ mod tests {
         assert_eq!(eif_info.version, 3);
         assert_eq!(eif_info.is_signed, false);
         assert!(eif_info.cert_info.is_none());
+        assert!(eif_info.crc_check);
+        assert!(eif_info.sign_check.is_none());
     }
 
     #[test]
@@ -803,6 +817,9 @@ mod tests {
             output: eif_path,
             signing_certificate: Some(cert_path),
             private_key: Some(key_path),
+            img_name: None,
+            img_version: None,
+            metadata: None,
         };
 
         build_from_docker(
@@ -811,6 +828,9 @@ mod tests {
             &args.output,
             &args.signing_certificate,
             &args.private_key,
+            &args.img_name,
+            &args.img_version,
+            &args.metadata,
         )
         .expect("Docker build failed");
 
@@ -819,5 +839,7 @@ mod tests {
         assert_eq!(eif_info.version, 3);
         assert_eq!(eif_info.is_signed, true);
         assert!(eif_info.cert_info.is_some());
+        assert!(eif_info.crc_check);
+        assert!(eif_info.sign_check.unwrap());
     }
 }
