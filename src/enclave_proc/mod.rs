@@ -23,6 +23,7 @@ use log::{info, warn};
 use nix::sys::epoll::EpollFlags;
 use nix::sys::signal::{Signal, SIGHUP};
 use nix::unistd::{daemon, getpid, getppid};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::os::unix::net::UnixStream;
@@ -34,10 +35,11 @@ use super::common::{construct_error_message, enclave_proc_command_send_single, n
 use super::common::{
     EnclaveProcessCommandType, ExitGracefully, NitroCliErrorEnum, NitroCliFailure, NitroCliResult,
 };
-use crate::common::commands_parser::{EmptyArgs, RunEnclavesArgs};
+use crate::common::commands_parser::{DescribeArgs, EmptyArgs, RunEnclavesArgs};
 use crate::common::logger::EnclaveProcLogWriter;
 use crate::common::signal_handler::SignalHandler;
 use crate::new_nitro_cli_failure;
+use crate::enclave_proc::utils::InfoLevel;
 
 use commands::{describe_enclaves, run_enclaves, terminate_enclaves};
 use connection::Connection;
@@ -223,8 +225,8 @@ fn handle_command(
     conn_listener: &mut ConnectionListener,
     enclave_manager: &mut EnclaveManager,
     terminate_thread: &mut Option<std::thread::JoinHandle<()>>,
-    pcr_thread: &mut Option<JoinHandle<NitroCliResult<BTreeMap<String, String>>>>,
-    add_info: &mut bool,
+    pcr_thread: &mut Option<JoinHandle<NitroCliResult<(BTreeMap<String, String>, Value)>>>,
+    add_info: &mut InfoLevel,
 ) -> NitroCliResult<(i32, bool)> {
     Ok(match cmd {
         EnclaveProcessCommandType::Run => {
@@ -244,7 +246,7 @@ fn handle_command(
                 })?;
                 *enclave_manager = run_result.enclave_manager;
                 *pcr_thread = run_result.pcr_thread;
-                *add_info = true;
+                *add_info = InfoLevel::Measured;
 
                 info!("Enclave ID = {}", enclave_manager.enclave_id);
                 logger
@@ -311,6 +313,10 @@ fn handle_command(
         }
 
         EnclaveProcessCommandType::Describe => {
+            let describe_args = connection.read::<DescribeArgs>().map_err(|e| {
+                e.add_subaction("Failed to get describe arguments".to_string())
+                    .set_action("Describe Enclave".to_string())
+            })?;
             connection.write_u64(MSG_ENCLAVE_CONFIRM).map_err(|e| {
                 e.add_subaction("Failed to write confirmation".to_string())
                     .set_action("Describe Enclaves".to_string())
@@ -318,32 +324,50 @@ fn handle_command(
 
             // Evaluate thread result at first describe, then set thread to None.
             if pcr_thread.is_some() {
-                enclave_manager
-                    .set_measurements(match pcr_thread.take() {
-                        Some(thread) => thread
-                            .join()
-                            .map_err(|e| {
-                                new_nitro_cli_failure!(
-                                    &format!("Termination thread join failed: {:?}", e),
-                                    NitroCliErrorEnum::ThreadJoinFailure
-                                )
-                            })?
-                            .map_err(|e| {
-                                e.add_subaction("Failed to save PCR values".to_string())
-                            })?,
-                        None => {
-                            return Err(new_nitro_cli_failure!(
-                                "Thread handle not found",
+                let result = match pcr_thread.take() {
+                    Some(thread) => thread
+                        .join()
+                        .map_err(|e| {
+                            new_nitro_cli_failure!(
+                                &format!("Termination thread join failed: {:?}", e),
                                 NitroCliErrorEnum::ThreadJoinFailure
-                            ));
-                        }
-                    })
+                            )
+                        })?
+                        .map_err(|e| {
+                            e.add_subaction("Failed to save PCR values".to_string())
+                        })?,
+                    None => {
+                        return Err(new_nitro_cli_failure!(
+                            "Thread handle not found",
+                            NitroCliErrorEnum::ThreadJoinFailure
+                        ));
+                    }
+                };
+                let measurements = result.0;
+                let metadata = result.1;
+                enclave_manager
+                    .set_measurements(
+                        measurements
+                    )
+                    .map_err(|e| {
+                        e.add_subaction(
+                            "Failed to set measuements inside enclave handle.".to_string(),
+                        )
+                    })?;
+                enclave_manager
+                    .set_metadata(
+                        metadata
+                    )
                     .map_err(|e| {
                         e.add_subaction(
                             "Failed to set measurements inside enclave handle.".to_string(),
                         )
                     })?;
                 *pcr_thread = None;
+            }
+
+            if describe_args.metadata {
+                *add_info = InfoLevel::Metadata;
             }
 
             describe_enclaves(&enclave_manager, connection, *add_info).map_err(|e| {
@@ -367,11 +391,11 @@ fn process_event_loop(
     let mut conn_listener = ConnectionListener::new()?;
     let mut enclave_manager = EnclaveManager::default();
     let mut terminate_thread: Option<std::thread::JoinHandle<()>> = None;
-    let mut pcr_thread: Option<std::thread::JoinHandle<NitroCliResult<BTreeMap<String, String>>>> =
+    let mut pcr_thread: Option<std::thread::JoinHandle<NitroCliResult<(BTreeMap<String, String>, Value)>>> =
         None;
     let mut done = false;
     let mut ret_value = Ok(());
-    let mut add_info = false;
+    let mut add_info = InfoLevel::Basic;
 
     // Start the signal handler before spawning any other threads. This is done since the
     // handler will mask all relevant signals from the current thread and this setting will

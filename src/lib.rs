@@ -33,6 +33,8 @@ use log::info;
 
 use utils::Console;
 
+use crate::common::json_output::DescribeMetadata;
+
 /// Hypervisor CID as defined by <http://man7.org/linux/man-pages/man7/vsock.7.html>.
 pub const VMADDR_CID_HYPERVISOR: u32 = 0;
 
@@ -191,6 +193,36 @@ pub fn describe_eif(eif_path: String) -> NitroCliResult<DescribeEifInfo> {
     })?;
 
     let header = eif_reader.get_header();
+    
+    let mut describe_meta = None;
+    if !eif_reader.metadata.is_null() {
+        let generated_metadata = match eif_reader.get_generated_meta() {
+            Some(meta) => meta.clone(),
+            None => return Err(new_nitro_cli_failure!(
+                &"Missing generated metadata.".to_string(),
+                NitroCliErrorEnum::SerdeError
+            )),
+        };
+        let docker_info = match eif_reader.get_docker_info() {
+            Some(meta) => meta.clone(),
+            None => return Err(new_nitro_cli_failure!(
+                &"Missing docker information.".to_string(),
+                NitroCliErrorEnum::SerdeError
+            )),
+        };
+        let custom_metadata = eif_reader.get_custom_meta();
+        describe_meta = Some(
+            DescribeMetadata::new(
+                generated_metadata,
+                docker_info,
+                custom_metadata,
+        ).map_err(|e| {
+            new_nitro_cli_failure!(
+                &format!("Failed construct metadata: {:?}", e),
+                NitroCliErrorEnum::SerdeError
+            )
+        })?);
+    }
 
     let mut info = DescribeEifInfo::new(
         header.version,
@@ -199,6 +231,9 @@ pub fn describe_eif(eif_path: String) -> NitroCliResult<DescribeEifInfo> {
         None,
         eif_reader.check_crc(),
         None,
+        eif_reader.get_name(),
+        eif_reader.get_version(),
+        describe_meta,
     );
 
     // Check if signature section is present
@@ -524,14 +559,12 @@ macro_rules! create_app {
                     .arg(
                         Arg::with_name("image_version")
                             .long("version")
-                            .short("v")
                             .help("Version of the enclave image")
                             .takes_value(true),
                     )
                     .arg(
                         Arg::with_name("metadata")
                             .long("metadata")
-                            .short("m")
                             .help("Path to JSON containing the custom metadata provided by the user.")
                             .takes_value(true),
                     ),
@@ -549,7 +582,12 @@ macro_rules! create_app {
             )
             .subcommand(
                 SubCommand::with_name("describe-enclaves")
-                    .about("Returns a list of the running enclaves"),
+                    .about("Returns a list of the running enclaves")
+                    .arg(
+                        Arg::with_name("metadata")
+                            .long("metadata")
+                            .help("Adds EIF metadata of the current enclaves to the command output.")
+                        ),
             )
             .subcommand(
                 SubCommand::with_name("console")
