@@ -6,6 +6,7 @@
 
 use eif_utils::SignCertificateInfo;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// The information to be provided for a `describe-enclaves` request.
@@ -72,14 +73,35 @@ pub struct DescribeOutput {
     #[serde(flatten)]
     /// Build meausrements containing PCRs
     build_info: Option<EnclaveBuildInfo>,
+    /// Assigned or default EIF name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "ImageName")]
+    pub img_name: Option<Value>,
+    #[serde(rename = "ImageVersion")]
+    /// Assigned or default EIF version
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub img_version: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "Metadata")]
+    /// EIF metadata
+    pub metadata: Option<DescribeMetadata>,
 }
 
 impl DescribeOutput {
     /// Creates new describe output from available
-    pub fn new(describe_info: EnclaveDescribeInfo, build_info: Option<EnclaveBuildInfo>) -> Self {
+    pub fn new(
+        describe_info: EnclaveDescribeInfo, 
+        build_info: Option<EnclaveBuildInfo>,
+        img_name: Option<Value>,
+        img_version: Option<Value>,
+        metadata: Option<DescribeMetadata>,
+    ) -> Self {
         DescribeOutput {
             describe_info,
             build_info,
+            img_name,
+            img_version,
+            metadata,
         }
     }
 }
@@ -186,6 +208,18 @@ pub struct DescribeEifInfo {
     #[serde(rename = "SignatureCheck")]
     /// Specifies if the EIF signature check passed.
     pub sign_check: Option<bool>,
+    #[serde(rename = "ImageName")]
+    /// Assigned or default EIF name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub img_name: Option<Value>,
+    #[serde(rename = "ImageVersion")]
+    /// Assigned or default EIF version
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub img_version: Option<Value>,
+    #[serde(skip_serializing_if = "DescribeMetadata::is_null")]
+    #[serde(rename = "Metadata")]
+    /// EIF metadata
+    pub metadata: DescribeMetadata,
 }
 
 impl DescribeEifInfo {
@@ -197,6 +231,9 @@ impl DescribeEifInfo {
         cert_info: Option<SignCertificateInfo>,
         crc_check: bool,
         sign_check: Option<bool>,
+        img_name: Option<Value>,
+        img_version: Option<Value>,
+        metadata: DescribeMetadata,
     ) -> Self {
         DescribeEifInfo {
             version,
@@ -205,6 +242,48 @@ impl DescribeEifInfo {
             cert_info,
             crc_check,
             sign_check,
+            img_name,
+            img_version,
+            metadata,
         }
+    }
+}
+
+/// Metadata to be included in the describe output
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DescribeMetadata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(flatten)]
+    /// Auto-generated metadata at build
+    pub generated_metadata: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "DockerInfo")]
+    /// Docker image information
+    pub docker_info: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(flatten)]
+    /// Metadata added by the user as JSON
+    pub custom_metadata: Option<Value>,
+}
+
+impl DescribeMetadata {
+    /// Construct metadata output struct
+    pub fn new(
+        generated_metadata: Option<Value>,
+        docker_info: Option<Value>,
+        custom_metadata: Option<Value>,
+    ) -> Self {
+        DescribeMetadata {
+            generated_metadata,
+            docker_info,
+            custom_metadata,
+        }
+    }
+
+    /// Returns true if all fields are None
+    pub fn is_null(&self) -> bool {
+        self.generated_metadata.is_none() &&
+        self.docker_info.is_none() &&
+        self.custom_metadata.is_none()
     }
 }

@@ -168,6 +168,7 @@ pub enum EifSectionType {
     EifSectionCmdline,
     EifSectionRamdisk,
     EifSectionSignature,
+    EifSectionMetadata,
 }
 
 #[derive(Clone, Copy, Debug)]

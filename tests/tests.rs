@@ -670,14 +670,16 @@ mod tests {
 
         assert!(pcr_thread.is_some());
 
+        let thread_result =  pcr_thread
+            .take()
+            .unwrap()
+            .join()
+            .expect("Failed to join thread.")
+            .expect("Failed to save PCRs.");
+
         enclave_manager
             .set_measurements(
-                pcr_thread
-                    .take()
-                    .unwrap()
-                    .join()
-                    .expect("Failed to join thread.")
-                    .expect("Failed to save PCRs."),
+               thread_result.0
             )
             .expect("Failed to set measuements inside enclave handle.");
 
