@@ -103,14 +103,12 @@ fn main() {
         .arg(
             Arg::with_name("image_version")
                 .long("version")
-                .short("v")
                 .help("Version of the enclave image")
                 .takes_value(true),
         )
         .arg(
             Arg::with_name("metadata")
                 .long("metadata")
-                .short("m")
                 .help("Path to JSON containing the custom metadata provided by the user.")
                 .takes_value(true),
         )
