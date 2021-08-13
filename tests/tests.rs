@@ -680,14 +680,16 @@ mod tests {
 
         assert!(pcr_thread.is_some());
 
+        let thread_result =  pcr_thread
+            .take()
+            .unwrap()
+            .join()
+            .expect("Failed to join thread.")
+            .expect("Failed to save PCRs.");
+
         enclave_manager
             .set_measurements(
-                pcr_thread
-                    .take()
-                    .unwrap()
-                    .join()
-                    .expect("Failed to join thread.")
-                    .expect("Failed to save PCRs."),
+               thread_result.0
             )
             .expect("Failed to set measurements inside enclave handle.");
 
@@ -724,6 +726,9 @@ mod tests {
             output: eif_path.to_str().unwrap().to_string(),
             signing_certificate: None,
             private_key: None,
+            img_name: None,
+            img_version: None,
+            metadata: None,
         };
 
         build_from_docker(
@@ -732,6 +737,9 @@ mod tests {
             &args.output,
             &args.signing_certificate,
             &args.private_key,
+            &args.img_name,
+            &args.img_version,
+            &args.metadata,
         )
         .expect("Docker build failed")
         .1;

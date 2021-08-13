@@ -11,7 +11,7 @@ use eif_defs::{
 use openssl::ec::EcKey;
 use serde::{Deserialize, Serialize};
 use serde_cbor::{from_slice, to_vec};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha384};
 use std::collections::BTreeMap;
 
@@ -119,25 +119,33 @@ pub fn get_pcrs<T: Digest + Debug + Write + Clone>(
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Metadata {
-    #[serde(flatten)]
+    #[serde(rename = "ImageName")]
+    pub img_name: String,
+    #[serde(rename = "ImageVersion")]
+    pub img_version:String,
+    #[serde(rename = "GeneratedMetadata")]
     /// Metadata generated at every build automatically
     pub generated_meta: BTreeMap<String, String>,
     #[serde(rename = "DockerInfo")]
     /// Information about the docker image
     pub docker_info: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(flatten)]
+    #[serde(rename = "CustomMetadata")]
     /// Metadata provided by the user
     pub custom_meta: Option<Value>,
 }
 
 impl Metadata {
     pub fn new(
+        img_name: String,
+        img_version:String,
         generated_meta: BTreeMap<String, String>,
         docker_info: Value,
         custom_meta: Option<Value>,
     ) -> Self {
         Metadata {
+            img_name,
+            img_version,
             generated_meta,
             docker_info,
             custom_meta,
@@ -322,6 +330,14 @@ impl<T: Digest + Debug + Write + Clone> EifBuilder<T> {
 
     fn signature_size(&self) -> u64 {
         self.signature_size
+    }
+
+    fn metadata_offset(&self) -> u64 {
+        if self.sign_info.is_none() {
+            self.signature_offset() + self.signature_size()
+        } else {
+            self.signature_offset() + EifSectionHeader::size() as u64 + self.signature_size()
+        }
     }
 
     /// Generate the signature of a certain PCR.
@@ -569,10 +585,7 @@ impl<T: Digest + Debug + Write + Clone> EifBuilder<T> {
         }
     }
 
-    pub fn write_metadata(&mut self) {
-        eprintln!("Image name: {}", self.eif_data.img_name);
-        eprintln!("Image version: {}", self.eif_data.img_version);
-
+    pub fn write_metadata(&mut self, eif_file: &mut File) {
         let generated_meta = self.get_generated_meta();
 
         let mut custom_meta: Option<serde_json::Value> = None;
@@ -589,18 +602,35 @@ impl<T: Digest + Debug + Write + Clone> EifBuilder<T> {
         }
 
         let metadata = Metadata::new(
+            self.eif_data.img_name.clone(),
+            self.eif_data.img_version.clone(),
             generated_meta,
             self.eif_data.docker_info.clone(),
             custom_meta,
         );
 
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&metadata)
-                .expect("Failed to print custom metadata.")
-                .as_str(),
-        );
+        let json = json!(metadata);
+        let json_bytes = serde_json::to_vec(&json).expect("Could not serialize metadata");
+        let meta_size = json_bytes.len();
 
+        let eif_section = EifSectionHeader {
+            section_type: EifSectionType::EifSectionMetadata,
+            flags: 0,
+            section_size: meta_size as u64,
+        };
+
+        eif_file
+            .seek(SeekFrom::Start(self.metadata_offset()))
+            .expect("Could not seek while writing metadata section");
+
+        let eif_buffer = eif_section.to_be_bytes();
+        eif_file
+            .write_all(&eif_buffer[..])
+            .expect("Failed to write metadata header");
+
+        eif_file
+            .write_all(&json_bytes)
+            .expect("Failed to write metadata content");
     }
 
     pub fn write_to(&mut self, output_file: &mut File) -> BTreeMap<String, String> {
@@ -623,7 +653,7 @@ impl<T: Digest + Debug + Write + Clone> EifBuilder<T> {
         self.write_cmdline(output_file);
         self.write_ramdisks(output_file);
         self.write_signature(output_file);
-        self.write_metadata();
+        self.write_metadata(output_file);
         measurements
     }
 
@@ -776,6 +806,8 @@ pub struct EifReader {
     pub cert_hasher: EifHasher<Sha384>,
     pub eif_crc: u32,
     pub sign_check: Option<bool>,
+    /// Generated and custom EIF metadata
+    pub metadata: Value,
 }
 
 impl EifReader {
@@ -816,6 +848,7 @@ impl EifReader {
             .map_err(|e| format!("Could not create cert_hasher: {:?}", e))?;
         let mut ramdisk_idx = 0;
         let mut signature_section = None;
+        let mut metadata = json!(null);
 
         // Read all section headers and treat by type
         while eif_file
@@ -825,7 +858,6 @@ impl EifReader {
         {
             let section = EifSectionHeader::from_be_bytes(&section_buf)
                 .map_err(|e| format!("Error extracting EIF section header: {:?}", e))?;
-            eif_crc.write(&section_buf);
 
             let mut buf = vec![0u8; section.section_size as usize];
             curr_seek += EifSectionHeader::size();
@@ -839,7 +871,6 @@ impl EifReader {
             eif_file
                 .seek(SeekFrom::Start(curr_seek as u64))
                 .map_err(|e| format!("Failed to seek after EIF section: {:?}", e))?;
-            eif_crc.write(&buf);
 
             match section.section_type {
                 EifSectionType::EifSectionKernel | EifSectionType::EifSectionCmdline => {
@@ -867,6 +898,8 @@ impl EifReader {
                         })?;
                     }
                     ramdisk_idx += 1;
+                    eif_crc.write(&section_buf);
+                    eif_crc.write(&buf);
                 }
                 EifSectionType::EifSectionSignature => {
                     signature_section = Some(buf.clone());
@@ -876,15 +909,17 @@ impl EifReader {
 
                     let cert = openssl::x509::X509::from_pem(&des_sign[0].signing_certificate)
                         .map_err(|e| format!("Error while digesting certificate: {:?}", e))?;
-                    let cert_der = cert.to_der().map_err(|e| {
-                        format!("Failed to deserialize signing certificate: {:?}", e)
-                    })?;
-                    cert_hasher.write_all(&cert_der).map_err(|e| {
-                        format!("Failed to write signature section to cert_hasher: {:?}", e)
-                    })?;
+                    let cert_der = cert.to_der().unwrap();
+                    cert_hasher.write_all(&cert_der).unwrap();
+                    eif_crc.write(&section_buf);
+                    eif_crc.write(&buf);
                 }
-                EifSectionType::EifSectionInvalid | EifSectionType::EifSectionMetadata => {
-                    return Err("Eif contains an invalid section".to_string());
+                EifSectionType::EifSectionMetadata => {
+                    metadata = serde_json::from_slice(&buf[..])
+                        .map_err(|e| format!("Error deserializing metadata: {:?}", e))?;
+                }
+                EifSectionType::EifSectionInvalid => {
+                    return Err("Found invalid EIF section".to_string());
                 }
             }
         }
@@ -898,7 +933,28 @@ impl EifReader {
             cert_hasher,
             eif_crc: eif_crc.sum32(),
             sign_check: None,
+            metadata,
         })
+    }
+
+    pub fn get_name(&self) -> Option<Value> {
+        self.metadata.get("ImageName").map(|value| value.clone())
+    }
+
+    pub fn get_version(&self) -> Option<Value> {
+        self.metadata.get("ImageVersion").map(|value| value.clone())
+    }
+
+    pub fn get_generated_meta(&self) -> Option<Value> {
+        self.metadata.get("GeneratedMetadata").map(|value| value.clone())
+    }
+
+    pub fn get_docker_info(&self) -> Option<Value> {
+        self.metadata.get("DockerInfo").map(|value| value.clone())
+    }
+
+    pub fn get_custom_meta(&self) -> Option<Value> {
+        self.metadata.get("CustomMetadata").map(|value| value.clone())
     }
 
     /// Returns deserialized header section

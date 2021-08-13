@@ -6,6 +6,7 @@
 
 use eif_utils::SignCertificateInfo;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// The information to be provided for a `describe-enclaves` request.
@@ -76,19 +77,37 @@ pub struct DescribeOutput {
     #[serde(flatten)]
     /// Build measurements containing PCRs
     build_info: Option<EnclaveBuildInfo>,
+    /// Assigned or default EIF name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "ImageName")]
+    pub img_name: Option<Value>,
+    #[serde(rename = "ImageVersion")]
+    /// Assigned or default EIF version
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub img_version: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "Metadata")]
+    /// EIF metadata
+    pub metadata: Option<DescribeMetadata>,
 }
 
 impl DescribeOutput {
     /// Creates new describe output from available
     pub fn new(
         enclave_name: Option<String>,
-        describe_info: EnclaveDescribeInfo,
+        describe_info: EnclaveDescribeInfo, 
         build_info: Option<EnclaveBuildInfo>,
+        img_name: Option<Value>,
+        img_version: Option<Value>,
+        metadata: Option<DescribeMetadata>,
     ) -> Self {
         DescribeOutput {
             enclave_name,
             describe_info,
             build_info,
+            img_name,
+            img_version,
+            metadata,
         }
     }
 }
@@ -205,6 +224,18 @@ pub struct DescribeEifInfo {
     #[serde(rename = "SignatureCheck")]
     /// Specifies if the EIF signature check passed.
     pub sign_check: Option<bool>,
+    #[serde(rename = "ImageName")]
+    /// Assigned or default EIF name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub img_name: Option<Value>,
+    #[serde(rename = "ImageVersion")]
+    /// Assigned or default EIF version
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub img_version: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "Metadata")]
+    /// EIF metadata
+    pub metadata: Option<DescribeMetadata>,
 }
 
 impl DescribeEifInfo {
@@ -216,6 +247,9 @@ impl DescribeEifInfo {
         cert_info: Option<SignCertificateInfo>,
         crc_check: bool,
         sign_check: Option<bool>,
+        img_name: Option<Value>,
+        img_version: Option<Value>,
+        metadata: Option<DescribeMetadata>,
     ) -> Self {
         DescribeEifInfo {
             version,
@@ -224,6 +258,78 @@ impl DescribeEifInfo {
             cert_info,
             crc_check,
             sign_check,
+            img_name,
+            img_version,
+            metadata,
         }
+    }
+}
+
+/// Metadata to be included in the describe output
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DescribeMetadata {
+    #[serde(rename = "BuildTime")]
+    /// Time of the build
+    pub build_time: String,
+    #[serde(rename = "BuildTool")]
+    /// Tool used for EIF build
+    pub build_tool: String,
+    #[serde(rename = "BuildToolVersion")]
+    /// Version of the build tool
+    pub tool_version: String,
+    #[serde(rename = "OperatingSystem")]
+    /// Enclave OS
+    pub operating_system: String,
+    #[serde(rename = "KernelVersion")]
+    /// Enclave kernel version
+    pub kernel_version: String,
+    #[serde(rename = "DockerInfo")]
+    /// Docker image information
+    pub docker_info: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "CustomMetadata")]
+    #[serde(flatten)]
+    /// Metadata added by the user as JSON
+    pub custom_metadata: Option<Value>,
+}
+
+impl DescribeMetadata {
+    /// Construct metadata output struct
+    pub fn new(
+        generated_metadata: Value,
+        docker_info: Value,
+        custom_metadata: Option<Value>,
+    ) -> Result<Self, String> {
+        let serde_value: BTreeMap<String, String> = serde_json::from_value(generated_metadata)
+            .map_err(|e| format!("Error deserializing generated metadata: {:?}", e))?;
+        let build_time = match serde_value.get("BuildTime") {
+            Some(val) => val.to_string(),
+            None => return Err("Missing build time field.".to_string()),
+        };
+        let build_tool = match serde_value.get("BuildTool") {
+            Some(val) => val.to_string(),
+            None => return Err("Missing build tool field.".to_string()),
+        };
+        let tool_version = match serde_value.get("BuildToolVersion") {
+            Some(val) => val.to_string(),
+            None => return Err("Missing build tool version field.".to_string()),
+        };
+        let operating_system = match serde_value.get("OperatingSystem") {
+            Some(val) => val.to_string(),
+            None => return Err("Missing operating system field.".to_string()),
+        };
+        let kernel_version = match serde_value.get("KernelVersion") {
+            Some(val) => val.to_string(),
+            None => return Err("Missing kernel version field.".to_string()),
+        };
+        Ok(DescribeMetadata {
+            build_time,
+            build_tool,
+            tool_version,
+            operating_system,
+            kernel_version,
+            docker_info,
+            custom_metadata,
+        })
     }
 }
