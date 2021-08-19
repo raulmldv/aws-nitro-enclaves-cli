@@ -199,7 +199,7 @@ impl DescribeArgs {
     /// Construct a new `DescribeArgs` instance from the given command-line arguments.
     pub fn new_with(args: &ArgMatches) -> Self {
         DescribeArgs {
-            metadata: args.is_present("metadata")
+            metadata: args.is_present("metadata"),
         }
     }
 }
@@ -405,18 +405,15 @@ fn parse_private_key(args: &ArgMatches) -> Option<String> {
 }
 
 fn parse_image_name(args: &ArgMatches) -> Option<String> {
-    args.value_of("image_name")
-        .map(|val| val.to_string())
+    args.value_of("image_name").map(|val| val.to_string())
 }
 
 fn parse_image_version(args: &ArgMatches) -> Option<String> {
-    args.value_of("image_version")
-        .map(|val| val.to_string())
+    args.value_of("image_version").map(|val| val.to_string())
 }
 
 fn parse_metadata(args: &ArgMatches) -> Option<String> {
-    args.value_of("metadata")
-        .map(|val| val.to_string())
+    args.value_of("metadata").map(|val| val.to_string())
 }
 
 fn parse_error_code_str(args: &ArgMatches) -> NitroCliResult<String> {

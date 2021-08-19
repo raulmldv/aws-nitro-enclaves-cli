@@ -90,7 +90,7 @@ pub struct DescribeOutput {
 impl DescribeOutput {
     /// Creates new describe output from available
     pub fn new(
-        describe_info: EnclaveDescribeInfo, 
+        describe_info: EnclaveDescribeInfo,
         build_info: Option<EnclaveBuildInfo>,
         img_name: Option<Value>,
         img_version: Option<Value>,
@@ -190,7 +190,7 @@ impl EnclaveBuildInfo {
 pub struct DescribeEifInfo {
     #[serde(rename = "EifVersion")]
     /// EIF version.
-    pub version: u16,
+    pub version: String,
     #[serde(flatten)]
     /// Contains the PCR values.
     pub build_info: EnclaveBuildInfo,
@@ -225,7 +225,7 @@ pub struct DescribeEifInfo {
 impl DescribeEifInfo {
     /// Create describe information structure for EIF.
     pub fn new(
-        version: u16,
+        version: String,
         build_info: EnclaveBuildInfo,
         is_signed: bool,
         cert_info: Option<SignCertificateInfo>,
@@ -282,8 +282,8 @@ impl DescribeMetadata {
 
     /// Returns true if all fields are None
     pub fn is_null(&self) -> bool {
-        self.generated_metadata.is_none() &&
-        self.docker_info.is_none() &&
-        self.custom_metadata.is_none()
+        self.generated_metadata.is_none()
+            && self.docker_info.is_none()
+            && self.custom_metadata.is_none()
     }
 }

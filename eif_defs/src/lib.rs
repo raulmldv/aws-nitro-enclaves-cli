@@ -14,7 +14,8 @@ use byteorder::{BigEndian, ByteOrder};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
-use std::mem::size_of;
+use serde_json::Value;
+use std::{collections::BTreeMap, mem::size_of};
 
 pub const EIF_MAGIC: [u8; 4] = [46, 101, 105, 102]; // .eif in ascii
 pub const MAX_NUM_SECTIONS: usize = 32;
@@ -27,7 +28,8 @@ pub const EIF_HDR_ARCH_ARM64: u16 = 0x1;
 /// of this structures, we assume changes are backwards compatible.
 /// V0 -> V1: Add support to generate and check CRC.
 /// V1 -> V2: Add the signature section.
-pub const CURRENT_VERSION: u16 = 3;
+/// V2 -> V3: Add the metadata section.
+pub const CURRENT_VERSION: u16 = 4;
 
 #[derive(Clone, Copy, Debug)]
 pub struct EifHeader {
@@ -251,6 +253,42 @@ impl PcrInfo {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Metadata {
+    #[serde(rename = "ImageName")]
+    pub img_name: String,
+    #[serde(rename = "ImageVersion")]
+    pub img_version: String,
+    #[serde(rename = "GeneratedMetadata")]
+    /// Metadata generated at every build automatically
+    pub generated_meta: BTreeMap<String, String>,
+    #[serde(rename = "DockerInfo")]
+    /// Information about the docker image
+    pub docker_info: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "CustomMetadata")]
+    /// Metadata provided by the user
+    pub custom_meta: Option<Value>,
+}
+
+impl Metadata {
+    pub fn new(
+        img_name: String,
+        img_version: String,
+        generated_meta: BTreeMap<String, String>,
+        docker_info: Value,
+        custom_meta: Option<Value>,
+    ) -> Self {
+        Metadata {
+            img_name,
+            img_version,
+            generated_meta,
+            docker_info,
+            custom_meta,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{EifHeader, EifSectionHeader, EifSectionType};
@@ -342,7 +380,7 @@ mod tests {
     #[test]
     fn test_eif_section_header_from_be_bytes_invalid_section_type() {
         let mut bytes = [0u8; 12];
-        bytes[1] = 5;
+        bytes[1] = 6;
 
         assert_eq!(EifSectionHeader::from_be_bytes(&bytes).is_err(), true);
     }

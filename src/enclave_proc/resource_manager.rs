@@ -15,7 +15,7 @@ use eif_loader::{enclave_ready, TIMEOUT_MINUTE_MS};
 use libc::c_int;
 use log::{debug, info};
 use nix::sys::socket::SockAddr;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::convert::{From, Into};
 use std::fs::{File, OpenOptions};
@@ -938,10 +938,7 @@ impl EnclaveManager {
     }
 
     /// Set metadata field inside EnclaveHandle
-    pub fn set_metadata(
-        &mut self,
-        metadata: Value,
-    ) -> NitroCliResult<()> {
+    pub fn set_metadata(&mut self, metadata: Value) -> NitroCliResult<()> {
         self.enclave_handle
             .lock()
             .map_err(|e| {
