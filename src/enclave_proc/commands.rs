@@ -13,7 +13,9 @@ use std::thread::JoinHandle;
 
 use crate::common::commands_parser::RunEnclavesArgs;
 use crate::common::construct_error_message;
-use crate::common::json_output::{DescribeMetadata, DescribeOutput, EnclaveBuildInfo, EnclaveTerminateInfo};
+use crate::common::json_output::{
+    DescribeMetadata, DescribeOutput, EnclaveBuildInfo, EnclaveTerminateInfo,
+};
 use crate::common::{NitroCliErrorEnum, NitroCliFailure, NitroCliResult};
 use crate::enclave_proc::connection::Connection;
 use crate::enclave_proc::connection::{safe_conn_eprintln, safe_conn_println};
@@ -177,7 +179,7 @@ pub fn describe_enclaves(
     let mut img_version: Option<Value> = None;
 
     match add_info {
-        InfoLevel::Basic => {},
+        InfoLevel::Basic => {}
         InfoLevel::Measured => {
             build_info = Some(enclave_manager.get_measurements()?);
             name = Some(enclave_manager.enclave_name.clone());

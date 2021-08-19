@@ -95,7 +95,7 @@ impl DescribeOutput {
     /// Creates new describe output from available
     pub fn new(
         enclave_name: Option<String>,
-        describe_info: EnclaveDescribeInfo, 
+        describe_info: EnclaveDescribeInfo,
         build_info: Option<EnclaveBuildInfo>,
         img_name: Option<Value>,
         img_version: Option<Value>,
@@ -206,7 +206,7 @@ impl EnclaveBuildInfo {
 pub struct DescribeEifInfo {
     #[serde(rename = "EifVersion")]
     /// EIF version.
-    pub version: u16,
+    pub version: String,
     #[serde(flatten)]
     /// Contains the PCR values.
     pub build_info: EnclaveBuildInfo,
@@ -241,7 +241,7 @@ pub struct DescribeEifInfo {
 impl DescribeEifInfo {
     /// Create describe information structure for EIF.
     pub fn new(
-        version: u16,
+        version: String,
         build_info: EnclaveBuildInfo,
         is_signed: bool,
         cert_info: Option<SignCertificateInfo>,

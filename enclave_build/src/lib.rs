@@ -10,12 +10,12 @@ mod yaml_generator;
 
 use docker::DockerUtil;
 use eif_defs::EIF_HDR_ARCH_ARM64;
-use eif_utils::{EifBuilder, SignEnclaveInfo, EifIdentityInfo};
+use eif_utils::{EifBuilder, EifIdentityInfo, SignEnclaveInfo};
+use serde_json::json;
 use sha2::Digest;
 use std::collections::BTreeMap;
-use yaml_generator::YamlGenerator;
 use tokio::runtime::Runtime;
-use serde_json::json;
+use yaml_generator::YamlGenerator;
 
 pub const DEFAULT_TAG: &str = "1.0";
 
@@ -90,7 +90,7 @@ impl<'a> Docker2Eif<'a> {
                 } else {
                     Some(meta.clone())
                 }
-            },
+            }
             None => None,
         };
 
@@ -109,7 +109,6 @@ impl<'a> Docker2Eif<'a> {
             Some(version) => version,
             None => &tag,
         };
-
 
         let sign_info = match (certificate_path, key_path) {
             (None, None) => None,
@@ -138,7 +137,7 @@ impl<'a> Docker2Eif<'a> {
                 img_version.clone(),
                 meta_file,
                 docker_info,
-            )
+            ),
         })
     }
 
@@ -165,11 +164,16 @@ impl<'a> Docker2Eif<'a> {
 
     pub fn create(&mut self) -> Result<BTreeMap<String, String>, Docker2EifError> {
         let info = async {
-            self.docker.docker.images().get(&self.docker_image).inspect().await
+            self.docker
+                .docker
+                .images()
+                .get(&self.docker_image)
+                .inspect()
+                .await
         };
         let runtime = Runtime::new().map_err(|_| Docker2EifError::DockerError)?;
         let docker_info = runtime.block_on(info).unwrap();
-        
+
         let (cmd_file, env_file) = self.docker.load().map_err(|e| {
             eprintln!("Docker error: {:?}", e);
             Docker2EifError::DockerError
@@ -252,7 +256,7 @@ impl<'a> Docker2Eif<'a> {
             img_version: self.eif_data.img_version.clone(),
             metadata_path: match &self.eif_data.metadata_path {
                 Some(meta) => Some(meta.clone()),
-                None => None
+                None => None,
             },
             docker_info: json!(docker_info),
         };
