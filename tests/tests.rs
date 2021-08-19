@@ -20,10 +20,11 @@ mod tests {
         new_enclave_name,
     };
     use nitro_cli::{CID_TO_CONSOLE_PORT_OFFSET, VMADDR_CID_HYPERVISOR};
+    use serde_json::json;
     use std::convert::TryInto;
-    use std::fs::OpenOptions;
+    use std::fs::{File, OpenOptions};
     use std::io::Write;
-    use tempfile::tempdir;
+    use tempfile::{tempdir, TempDir};
 
     use openssl::asn1::Asn1Time;
     use openssl::ec::{EcGroup, EcKey};
@@ -680,7 +681,7 @@ mod tests {
 
         assert!(pcr_thread.is_some());
 
-        let thread_result =  pcr_thread
+        let thread_result = pcr_thread
             .take()
             .unwrap()
             .join()
@@ -709,6 +710,126 @@ mod tests {
         assert_eq!(
             build_info.measurements.get(&"PCR2".to_string()).unwrap(),
             "52528ebeccf82b21cea3f3a9d055f1bb3d18254d77dcda2bbd7f39cecd96b7eea842913800cc1b0bc261b7ad1b83be90"
+        );
+
+        let _enclave_id = generate_enclave_id(0).expect("Describe enclaves failed");
+        terminate_enclaves(&mut enclave_manager, None).expect("Terminate enclaves failed");
+    }
+
+    fn create_metadata_json(dir: &TempDir) {
+        let file_path = dir.path().join("meta.json");
+        let mut meta_file = File::create(file_path).unwrap();
+        let content = json!({
+            "AppVersion": "3.2",
+            "TestField": "Some info",
+            "ComplexField": {
+                "1": 1,
+                "2": 3,
+                "List": [
+                    {"obj1": 1},
+                    {"obj2": 2}
+                ]
+            }
+        });
+        let json_bytes = serde_json::to_vec(&content).unwrap();
+        meta_file.write_all(&json_bytes[..]).unwrap();
+    }
+
+    #[test]
+    fn build_with_metadata_run_describe() {
+        let dir = tempdir().unwrap();
+        create_metadata_json(&dir);
+        let eif_path = dir.path().join("test.eif");
+        let meta_path = dir.path().join("meta.json");
+        setup_env();
+        let args = BuildEnclavesArgs {
+            docker_uri: SAMPLE_DOCKER.to_string(),
+            docker_dir: None,
+            output: eif_path.to_str().unwrap().to_string(),
+            signing_certificate: None,
+            private_key: None,
+            img_name: Some("TestName".to_string()),
+            img_version: Some("1.0".to_string()),
+            metadata: Some(meta_path.to_str().unwrap().to_string()),
+        };
+
+        build_from_docker(
+            &args.docker_uri,
+            &args.docker_dir,
+            &args.output,
+            &args.signing_certificate,
+            &args.private_key,
+            &args.img_name,
+            &args.img_version,
+            &args.metadata,
+        )
+        .expect("Docker build failed")
+        .1;
+
+        setup_env();
+        let run_args = RunEnclavesArgs {
+            enclave_cid: None,
+            eif_path: args.output,
+            cpu_ids: None,
+            cpu_count: Some(2),
+            memory_mib: 64,
+            debug_mode: Some(true),
+            enclave_name: Some("testName".to_string()),
+        };
+        let run_result = run_enclaves(&run_args, None).expect("Run enclaves failed");
+        let mut enclave_manager = run_result.enclave_manager;
+        let mut pcr_thread = run_result.pcr_thread;
+
+        assert!(pcr_thread.is_some());
+
+        let thread_result = pcr_thread
+            .take()
+            .unwrap()
+            .join()
+            .expect("Failed to join thread.")
+            .expect("Failed to save PCRs.");
+
+        enclave_manager
+            .set_measurements(thread_result.0)
+            .expect("Failed to set measuements inside enclave handle.");
+        enclave_manager
+            .set_metadata(thread_result.1)
+            .expect("Failed to set metadata inside enclave handle.");
+
+        let metadata = enclave_manager.get_metadata().unwrap();
+
+        assert_eq!(
+            *metadata.get("BuildTool").unwrap(),
+            json!("aws-nitro-enclaves-cli")
+        );
+        assert_eq!(*metadata.get("BuildToolVersion").unwrap(), json!("1.0.12"));
+        assert_eq!(*metadata.get("OperatingSystem").unwrap(), json!("Linux"));
+        assert_eq!(
+            *metadata
+                .get("DockerInfo")
+                .unwrap()
+                .get("RepoTags")
+                .unwrap()
+                .get(0)
+                .unwrap(),
+            json!("667861386598.dkr.ecr.us-east-1.amazonaws.com/enclaves-samples:vsock-sample")
+        );
+        assert_eq!(*metadata.get("AppVersion").unwrap(), json!("3.2"));
+        assert_eq!(
+            *metadata.get("ComplexField").unwrap().get("1").unwrap(),
+            json!(1)
+        );
+        assert_eq!(
+            *metadata
+                .get("ComplexField")
+                .unwrap()
+                .get("List")
+                .unwrap()
+                .get(0)
+                .unwrap()
+                .get("obj1")
+                .unwrap(),
+            json!(1)
         );
 
         let _enclave_id = generate_enclave_id(0).expect("Describe enclaves failed");
@@ -802,7 +923,7 @@ mod tests {
 
         let eif_info = describe_eif(args.output).unwrap();
 
-        assert_eq!(eif_info.version, 3);
+        assert_eq!(eif_info.version, "3");
         assert_eq!(eif_info.is_signed, false);
         assert!(eif_info.cert_info.is_none());
         assert!(eif_info.crc_check);
@@ -844,7 +965,7 @@ mod tests {
 
         let eif_info = describe_eif(args.output).unwrap();
 
-        assert_eq!(eif_info.version, 3);
+        assert_eq!(eif_info.version, "3");
         assert_eq!(eif_info.is_signed, true);
         assert!(eif_info.cert_info.is_some());
         assert!(eif_info.crc_check);

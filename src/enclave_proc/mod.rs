@@ -39,8 +39,8 @@ use crate::common::commands_parser::{DescribeArgs, EmptyArgs, RunEnclavesArgs};
 use crate::common::logger::EnclaveProcLogWriter;
 use crate::common::signal_handler::SignalHandler;
 use crate::enclave_proc::connection::safe_conn_println;
-use crate::new_nitro_cli_failure;
 use crate::enclave_proc::utils::InfoLevel;
+use crate::new_nitro_cli_failure;
 
 use commands::{describe_enclaves, run_enclaves, terminate_enclaves};
 use connection::Connection;
@@ -380,9 +380,7 @@ fn handle_command(
                                 NitroCliErrorEnum::ThreadJoinFailure
                             )
                         })?
-                        .map_err(|e| {
-                            e.add_subaction("Failed to save PCR values".to_string())
-                        })?,
+                        .map_err(|e| e.add_subaction("Failed to save PCR values".to_string()))?,
                     None => {
                         return Err(new_nitro_cli_failure!(
                             "Thread handle not found",
@@ -393,28 +391,22 @@ fn handle_command(
                 let measurements = result.0;
                 let metadata = result.1;
                 enclave_manager
-                    .set_measurements(
-                        measurements
-                    )
-                    .map_err(|e| {
-                        e.add_subaction(
-                            "Failed to set measuements inside enclave handle.".to_string(),
-                        )
-                    })?;
-                enclave_manager
-                    .set_metadata(
-                        metadata
-                    )
+                    .set_measurements(measurements)
                     .map_err(|e| {
                         e.add_subaction(
                             "Failed to set measurements inside enclave handle.".to_string(),
                         )
                     })?;
+                enclave_manager.set_metadata(metadata).map_err(|e| {
+                    e.add_subaction("Failed to set measurements inside enclave handle.".to_string())
+                })?;
                 *pcr_thread = None;
             }
 
             if describe_args.metadata {
                 *add_info = InfoLevel::Metadata;
+            } else {
+                *add_info = InfoLevel::Measured;
             }
 
             describe_enclaves(&enclave_manager, connection, *add_info).map_err(|e| {
@@ -438,8 +430,9 @@ fn process_event_loop(
     let mut conn_listener = ConnectionListener::new()?;
     let mut enclave_manager = EnclaveManager::default();
     let mut terminate_thread: Option<std::thread::JoinHandle<()>> = None;
-    let mut pcr_thread: Option<std::thread::JoinHandle<NitroCliResult<(BTreeMap<String, String>, Value)>>> =
-        None;
+    let mut pcr_thread: Option<
+        std::thread::JoinHandle<NitroCliResult<(BTreeMap<String, String>, Value)>>,
+    > = None;
     let mut done = false;
     let mut ret_value = Ok(());
     let mut add_info = InfoLevel::Basic;
