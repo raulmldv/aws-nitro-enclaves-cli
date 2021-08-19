@@ -28,7 +28,8 @@ pub const EIF_HDR_ARCH_ARM64: u16 = 0x1;
 /// of this structures, we assume changes are backwards compatible.
 /// V0 -> V1: Add support to generate and check CRC.
 /// V1 -> V2: Add the signature section.
-pub const CURRENT_VERSION: u16 = 3;
+/// V2 -> V3: Add the metadata section.
+pub const CURRENT_VERSION: u16 = 4;
 
 #[derive(Clone, Copy, Debug)]
 pub struct EifHeader {

@@ -15,7 +15,7 @@
 use std::path::Path;
 
 use clap::{App, Arg};
-use eif_utils::{get_pcrs, EifBuilder, SignEnclaveInfo, EifIdentityInfo};
+use eif_utils::{get_pcrs, EifBuilder, EifIdentityInfo, SignEnclaveInfo};
 use serde_json::json;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::fmt::Debug;
@@ -161,7 +161,7 @@ fn main() {
             None => {
                 let path_split: Vec<&str> = kernel_path.split('/').collect();
                 path_split[path_split.len() - 1].to_string()
-            },
+            }
         },
         img_version: match img_version {
             Some(name) => name,

@@ -13,7 +13,9 @@ use std::thread::JoinHandle;
 
 use crate::common::commands_parser::RunEnclavesArgs;
 use crate::common::construct_error_message;
-use crate::common::json_output::{DescribeMetadata, DescribeOutput, EnclaveBuildInfo, EnclaveTerminateInfo};
+use crate::common::json_output::{
+    DescribeMetadata, DescribeOutput, EnclaveBuildInfo, EnclaveTerminateInfo,
+};
 use crate::common::{NitroCliErrorEnum, NitroCliFailure, NitroCliResult};
 use crate::enclave_proc::connection::Connection;
 use crate::enclave_proc::connection::{safe_conn_eprintln, safe_conn_println};
@@ -163,10 +165,10 @@ pub fn describe_enclaves(
     let mut img_version: Option<Value> = None;
 
     match add_info {
-        InfoLevel::Basic => {},
+        InfoLevel::Basic => {}
         InfoLevel::Measured => {
             build_info = Some(enclave_manager.get_measurements()?);
-        },
+        }
         InfoLevel::Metadata => {
             build_info = Some(enclave_manager.get_measurements()?);
             let raw_metadata = enclave_manager.get_metadata()?;
@@ -199,13 +201,7 @@ pub fn describe_enclaves(
             }
         }
     }
-    let output = DescribeOutput::new(
-        info,
-        build_info, 
-        img_name, 
-        img_version, 
-        metadata
-    );
+    let output = DescribeOutput::new(info, build_info, img_name, img_version, metadata);
 
     connection.println(
         serde_json::to_string_pretty(&output)
