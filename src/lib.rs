@@ -24,11 +24,13 @@ use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
-use common::commands_parser::{BuildEnclavesArgs, EmptyArgs};
+use common::commands_parser::{BuildEnclavesArgs, EmptyArgs, RunEnclavesArgs};
 use common::json_output::{DescribeEifInfo, EnclaveBuildInfo, EnclaveTerminateInfo};
 use common::{enclave_proc_command_send_single, get_sockets_dir_path};
 use common::{EnclaveProcessCommandType, NitroCliErrorEnum, NitroCliFailure, NitroCliResult};
-use enclave_proc_comm::enclave_process_handle_all_replies;
+use enclave_proc_comm::{
+    enclave_proc_command_send_all, enclave_proc_handle_outputs, enclave_process_handle_all_replies,
+};
 use log::info;
 
 use utils::Console;
@@ -153,6 +155,40 @@ pub fn build_from_docker(
     );
 
     Ok((file_output, measurements))
+}
+
+/// Creates new enclave name
+///
+/// Requests the names of all running instances and checks the
+/// occurrence of the chosen name for the new enclave.
+pub fn new_enclave_name(run_args: RunEnclavesArgs) -> NitroCliResult<String> {
+    let enclave_name = match run_args.enclave_name {
+        Some(enclave_name) => enclave_name,
+        None => {
+            // Get name of EIF file from path eg. path/to/eif/hello.eif -> hello
+            let path_split: Vec<&str> = run_args.eif_path.split(&['/', '.'][..]).collect();
+            path_split[path_split.len() - 2].to_string()
+        }
+    };
+
+    let mut names = get_all_enclave_names().map_err(|e| {
+        e.add_subaction("Failed to handle all enclave process replies".to_string())
+            .set_action("Get Enclaves Name".to_string())
+    })?;
+
+    let mut idx = 0;
+    let mut result_name = enclave_name.clone();
+    names.sort();
+
+    // If duplicates are found, add index to name eg. testName -> testName_1 -> testName_2 ..
+    for name in names {
+        if result_name == name {
+            idx += 1;
+            result_name = enclave_name.clone() + &'_'.to_string() + &idx.to_string();
+        }
+    }
+
+    Ok(result_name)
 }
 
 /// Returns information related to the given EIF
@@ -368,6 +404,26 @@ pub fn terminate_all_enclaves() -> NitroCliResult<()> {
     .map_err(|e| e.add_subaction("Failed to handle all enclave processes replies".to_string()))
 }
 
+/// Queries all enclaves for their name
+pub fn get_all_enclave_names() -> NitroCliResult<Vec<String>> {
+    let (comms, _) =
+        enclave_proc_command_send_all::<EmptyArgs>(EnclaveProcessCommandType::GetEnclaveName, None)
+            .map_err(|e| {
+                e.add_subaction(
+                    "Failed to send GetEnclaveName command to all enclave processes".to_string(),
+                )
+                .set_action("Get Enclave Names".to_string())
+            })?;
+
+    let mut replies: Vec<UnixStream> = vec![];
+    replies.extend(comms);
+    let objects = enclave_proc_handle_outputs::<String>(&mut replies)
+        .iter()
+        .map(|v| v.0.clone())
+        .collect();
+    Ok(objects)
+}
+
 /// Macro defining the arguments configuration for a *Nitro CLI* application.
 #[macro_export]
 macro_rules! create_app {
@@ -434,6 +490,14 @@ macro_rules! create_app {
                                 enclave_cid + 10000. \n The stream could be accessed with the console \
                                 sub-command" ,
                             )
+                            .conflicts_with("config"),
+                    )
+                    .arg(
+                        Arg::with_name("enclave-name")
+                            .long("enclave-name")
+                            .takes_value(true)
+                            .help("Custom name assigned to the enclave by the user")
+                            .required(false)
                             .conflicts_with("config"),
                     )
                     .arg(

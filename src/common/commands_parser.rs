@@ -28,6 +28,8 @@ pub struct RunEnclavesArgs {
     pub debug_mode: Option<bool>,
     /// The number of CPUs that the enclave will receive.
     pub cpu_count: Option<u32>,
+    /// Enclave name set by the user.
+    pub enclave_name: Option<String>,
 }
 
 impl RunEnclavesArgs {
@@ -75,6 +77,8 @@ impl RunEnclavesArgs {
                 cpu_ids: parse_cpu_ids(args)
                     .map_err(|err| err.add_subaction("Parse CPU IDs".to_string()))?,
                 debug_mode: debug_mode(args),
+                enclave_name: parse_enclave_name(args)
+                    .map_err(|err| err.add_subaction("Parse enclave name".to_string()))?,
             })
         }
     }
@@ -390,6 +394,16 @@ fn debug_mode(args: &ArgMatches) -> Option<bool> {
     } else {
         None
     }
+}
+
+/// Parse the enclave name from the command-line arguments.
+fn parse_enclave_name(args: &ArgMatches) -> NitroCliResult<Option<String>> {
+    let enclave_name = if let Some(enclave_name) = args.value_of("enclave-name") {
+        Some(enclave_name.to_string())
+    } else {
+        None
+    };
+    Ok(enclave_name)
 }
 
 fn parse_signing_certificate(args: &ArgMatches) -> Option<String> {
