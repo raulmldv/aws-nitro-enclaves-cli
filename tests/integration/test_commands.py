@@ -122,6 +122,38 @@ def test_describe_enclaves(init_resources):
         result_json = json.loads(result.stdout.decode('UTF-8'))
         assert not result_json
 
+# Test running an enclave with a given name and applying the other commands on the name
+def test_enclave_name(init_resources):
+        result = run_enclave_ok(SAMPLE_EIF, "1028", "2", ["--enclave-name", "testName"])
+        result_json = json.loads(result.stdout.decode('UTF-8'))
+        enclave_name = result_json["EnclaveName"]
+
+        result = describe_enclaves_ok()
+        result_json = json.loads(result.stdout.decode('UTF-8'))
+        describe_name = result_json[0]["EnclaveName"]
+
+        console_proc = connect_console_by_name(enclave_name)
+        try:
+                outs, errs = console_proc.communicate(timeout=15)
+                # Console should never exit
+                assert 0
+        except TimeoutExpired:
+                console_proc.kill()
+                outs, errs = console_proc.communicate()
+                out_str = outs.decode('UTF-8')
+                err_str = errs.decode('UTF-8')
+
+                assert out_str.find("Unpacking initramfs") != -1
+                assert not err_str
+
+        result = terminate_enclave_by_name(enclave_name)
+        result_json = json.loads(result.stdout.decode('UTF-8'))
+        terminate_name = result_json["EnclaveName"]
+
+        assert enclave_name == "testName"
+        assert describe_name == "testName"
+        assert terminate_name == "testName"
+
 # Test describe_eif command is successful and returns as expected
 def test_describe_eif(init_resources):
         result = run_enclave_ok(SAMPLE_EIF, "1028", "2")

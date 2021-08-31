@@ -121,6 +121,16 @@ def terminate_enclave_ok(enclave_id):
 
         return run_subprocess_ok(args)
 
+# Terminates an enclave with the given name and checks the command was successful
+# Returns an instance of a CompletedProcess
+def terminate_enclave_by_name(enclave_name):
+        args = [ "nitro-cli",
+                 "terminate-enclave",
+                 "--enclave-name", enclave_name
+        ]
+
+        return run_subprocess_ok(args)
+
 # Runs describe_enclaves command and checks the command was successful
 # Returns an instance of a CompletedProcess
 def describe_enclaves_ok():
@@ -148,6 +158,15 @@ def connect_console(enclave_id, timeout = None):
 
         if timeout is not None:
                 args.extend(["--disconnect-timeout", str(timeout)])
+
+        return subprocess.Popen(args, stdout = PIPE, stderr = PIPE)
+
+# Connects to the enclave console defined by the enclave name
+# Returns the handle to the running process.
+def connect_console_by_name(enclave_name):
+        args = ["nitro-cli",
+                "console",
+                "--enclave-name", enclave_name]
 
         return subprocess.Popen(args, stdout = PIPE, stderr = PIPE)
 
