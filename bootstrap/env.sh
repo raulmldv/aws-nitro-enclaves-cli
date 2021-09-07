@@ -14,3 +14,4 @@ lsmod | grep -q nitro_enclaves || \
 
 export PATH=${PATH}:${NITRO_CLI_INSTALL_DIR}/usr/bin/:${NITRO_CLI_INSTALL_DIR}/etc/profile.d/
 export NITRO_CLI_BLOBS=${NITRO_CLI_INSTALL_DIR}/usr/share/nitro_enclaves/blobs
+export NITRO_CLI_SPECS=${NITRO_CLI_INSTALL_DIR}/usr/share/nitro_enclaves/SPECS

@@ -36,11 +36,8 @@ use std::time::SystemTime;
 
 pub const DEFAULT_SECTIONS_COUNT: u16 = 2;
 pub const META_SECTION: u16 = 1;
-pub const NITROCLI_SPECS_PATH: &str = "../../SPECS/aws-nitro-enclaves-cli.spec";
-#[cfg(target_arch = "x86_64")]
-pub const KERNEL_CONFIG_PATH: &str = "../../blobs/x86_64/bzImage.config";
-#[cfg(target_arch = "aarch64")]
-pub const KERNEL_CONFIG_PATH: &str = "../../blobs/aarch64/bzImage.config";
+const DEFAULT_BLOBS_PATH: &str = "/usr/share/nitro_enclaves/blobs/";
+const DEFAULT_SPECS_PATH: &str = "/usr/share/nitro_enclaves/SPECS/";
 
 #[derive(Clone, Debug)]
 pub struct SignEnclaveInfo {
@@ -660,11 +657,13 @@ impl<T: Digest + Debug + Write + Clone> EifBuilder<T> {
         let time: DateTime<Utc> = time.into();
         meta.insert("BuildTime".to_string(), time.to_rfc3339());
 
+        let blobs_path = std::env::var("NITRO_CLI_BLOBS").unwrap_or_else(|_| DEFAULT_BLOBS_PATH.to_string());
         // Read aws-nitro-enclaves-cli.spec file and parse the lines that contain:
         // Name:      aws-nitro-enclaves-cli
         // Version:   1.0.12
+        let specs_path = std::env::var("NITRO_CLI_SPECS").unwrap_or_else(|_| DEFAULT_SPECS_PATH.to_string());
         let specs_file =
-            File::open(NITROCLI_SPECS_PATH).expect("Failed to open NitroCLI specs file.");
+            File::open(format!("{}/aws-nitro-enclaves-cli.spec", specs_path)).expect("Failed to open NitroCLI specs file.");
         let spec_lines = BufReader::new(specs_file).lines();
         let mut tool_name = String::new();
         let mut tool_version = String::new();
@@ -686,7 +685,7 @@ impl<T: Digest + Debug + Write + Clone> EifBuilder<T> {
         meta.insert("BuildToolVersion".to_string(), tool_version);
 
         let config_file =
-            File::open(KERNEL_CONFIG_PATH).expect("Failed to open kernel image config file.");
+            File::open(format!("{}/bzImage.config", blobs_path)).expect("Failed to open kernel image config file.");
         let os_string: String = BufReader::new(config_file)
             .lines()
             .nth(2)

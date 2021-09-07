@@ -195,6 +195,7 @@ nitro-cli-native:
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		$(CONTAINER_TAG) bin/bash -c \
 			'NITRO_CLI_BLOBS=/nitro_src/samples/command_executer/resources/blobs/${HOST_MACHINE} \
+			NITRO_CLI_SPECS=/nitro_src/SPECS \
 				/nitro_build/nitro_cli/${CARGO_TARGET}/release/nitro-cli \
 					build-enclave \
 					--docker-uri command_executer:eif \
@@ -316,6 +317,8 @@ install-tools:
 	$(CP) -r blobs/${HOST_MACHINE}/* ${NITRO_CLI_INSTALL_DIR}${DATA_DIR}/nitro_enclaves/blobs/
 	$(MKDIR) -p ${NITRO_CLI_INSTALL_DIR}${DATA_DIR}/nitro_enclaves/examples
 	$(CP) -r examples/${HOST_MACHINE}/* ${NITRO_CLI_INSTALL_DIR}${DATA_DIR}/nitro_enclaves/examples/
+	$(MKDIR) -p ${NITRO_CLI_INSTALL_DIR}${DATA_DIR}/nitro_enclaves/SPECS
+	$(CP) -r SPECS/* ${NITRO_CLI_INSTALL_DIR}${DATA_DIR}/nitro_enclaves/SPECS/
 
 .PHONY: install
 install: install-tools nitro_enclaves

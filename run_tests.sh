@@ -11,6 +11,7 @@ TEST_SUITES_TOTAL=0
 
 SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 export NITRO_CLI_BLOBS="${SCRIPTDIR}/blobs"
+export NITRO_CLI_SPECS="${SCRIPTDIR}/SPECS"
 export NITRO_CLI_ARTIFACTS="${SCRIPTDIR}/build"
 ARCH="$(uname -m)"
 
