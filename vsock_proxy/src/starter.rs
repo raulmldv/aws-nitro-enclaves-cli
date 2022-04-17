@@ -12,7 +12,7 @@ use nix::sys::select::{select, FdSet};
 use nix::sys::socket::SockType;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::os::unix::io::AsRawFd;
 use threadpool::ThreadPool;
 use vsock::SockAddr;
@@ -22,6 +22,62 @@ use yaml_rust::YamlLoader;
 const BUFF_SIZE: usize = 8192;
 pub const VSOCK_PROXY_CID: u32 = 3;
 pub const VSOCK_PROXY_PORT: u32 = 8000;
+pub const DEFAULT_VALUE: u32 = 0;
+pub const DEFAULT_PORT: u16 = 0;
+pub const DEFAULT_ADDRESS: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+pub const DEFAULT_ADDRESS_STR: &str = "0.0.0.0";
+
+/// Defines how the proxy forwards traffic
+pub enum ProxyType {
+    ClientOverVsock,
+    ServerOverVsock,
+}
+
+pub struct ProxyArgs {
+    /// Args for ClientOverVsock
+    local_port: u32,
+    remote_host: String,
+    remote_addr: IpAddr,
+    remote_port: u16,
+    /// Args for ServerOverVsock
+    pub exposed_port: u16,
+    pub remote_cid: u32,
+    pub vsock_port: u32,
+}
+
+impl ProxyArgs {
+    pub fn new_client_over_vsock(
+        local_port: u32,
+        remote_host: String,
+        remote_port: u16,
+    ) -> VsockProxyResult<Self> {
+        Ok(Self {
+            local_port,
+            remote_host,
+            remote_addr: DEFAULT_ADDRESS,
+            remote_port,
+            exposed_port: DEFAULT_PORT,
+            remote_cid: DEFAULT_VALUE,
+            vsock_port: DEFAULT_VALUE,
+        })
+    }
+
+    pub fn new_server_over_vsock(
+        exposed_port: u16,
+        remote_cid: u32,
+        vsock_port: u32,
+    ) -> VsockProxyResult<Self> {
+        Ok(Self {
+            local_port: DEFAULT_VALUE,
+            remote_host: DEFAULT_ADDRESS_STR.to_string(),
+            remote_addr: DEFAULT_ADDRESS,
+            remote_port: DEFAULT_PORT,
+            exposed_port,
+            remote_cid,
+            vsock_port,
+        })
+    }
+}
 
 /// The most common result type provided by VsockProxy operations.
 pub type VsockProxyResult<T> = Result<T, String>;
@@ -84,18 +140,16 @@ pub fn check_allowlist(
 
 /// Configuration parameters for port listening and remote destination
 pub struct Proxy {
-    local_port: u32,
-    remote_addr: IpAddr,
-    remote_port: u16,
-    pool: ThreadPool,
-    sock_type: SockType,
+    pub proxy_type: ProxyType,
+    pub proxy_args: ProxyArgs,
+    pub pool: ThreadPool,
+    pub sock_type: SockType,
 }
 
 impl Proxy {
     pub fn new(
-        local_port: u32,
-        remote_host: &str,
-        remote_port: u16,
+        proxy_type: ProxyType,
+        mut proxy_args: ProxyArgs,
         num_workers: usize,
         config_file: Option<&str>,
         only_4: bool,
@@ -105,22 +159,37 @@ impl Proxy {
             return Err("Number of workers must not be 0".to_string());
         }
         info!("Checking allowlist configuration");
-        let remote_addr = check_allowlist(remote_host, remote_port, config_file, only_4, only_6)
-            .map_err(|err| format!("Error at checking the allowlist: {}", err))?;
         let pool = ThreadPool::new(num_workers);
         let sock_type = SockType::Stream;
 
-        info!(
-            "Using IP \"{:?}\" for the given server \"{}\"",
-            remote_addr, remote_host
-        );
-        Ok(Proxy {
-            local_port,
-            remote_addr,
-            remote_port,
-            pool,
-            sock_type,
-        })
+        match proxy_type {
+            ProxyType::ClientOverVsock => {
+                proxy_args.remote_addr = check_allowlist(
+                    &proxy_args.remote_host,
+                    proxy_args.remote_port,
+                    config_file,
+                    only_4,
+                    only_6,
+                )
+                .map_err(|err| format!("Error at checking the allowlist: {}", err))?;
+                info!(
+                    "Using IP \"{:?}\" for the given server \"{}\"",
+                    proxy_args.remote_addr, proxy_args.remote_addr
+                );
+                Ok(Proxy {
+                    proxy_type,
+                    proxy_args,
+                    pool,
+                    sock_type,
+                })
+            }
+            ProxyType::ServerOverVsock => Ok(Proxy {
+                proxy_type,
+                proxy_args,
+                pool,
+                sock_type,
+            }),
+        }
     }
 
     /// Resolve a DNS name (IDNA format) into an IP address (v4 or v6)
@@ -162,7 +231,7 @@ impl Proxy {
     /// Creates a listening socket
     /// Returns the file descriptor for it or the appropriate error
     pub fn sock_listen(&self) -> VsockProxyResult<VsockListener> {
-        let sockaddr = SockAddr::new_vsock(VSOCK_PROXY_CID, self.local_port);
+        let sockaddr = SockAddr::new_vsock(VSOCK_PROXY_CID, self.proxy_args.local_port);
         let listener = VsockListener::bind(&sockaddr)
             .map_err(|_| format!("Could not bind to {:?}", sockaddr))?;
         info!("Bound to {:?}", sockaddr);
@@ -179,7 +248,7 @@ impl Proxy {
             .map_err(|_| "Could not accept connection")?;
         info!("Accepted connection on {:?}", client_addr);
 
-        let sockaddr = SocketAddr::new(self.remote_addr, self.remote_port);
+        let sockaddr = SocketAddr::new(self.proxy_args.remote_addr, self.proxy_args.remote_port);
         let sock_type = self.sock_type;
         self.pool.execute(move || {
             let mut server = match sock_type {

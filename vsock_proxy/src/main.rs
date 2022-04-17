@@ -10,7 +10,7 @@ use clap::{App, AppSettings, Arg};
 use env_logger::init;
 use log::info;
 
-use vsock_proxy::starter::{Proxy, VsockProxyResult};
+use vsock_proxy::starter::{Proxy, ProxyArgs, ProxyType, VsockProxyResult};
 
 fn main() -> VsockProxyResult<()> {
     init();
@@ -43,19 +43,26 @@ fn main() -> VsockProxyResult<()> {
                 .default_value("4"),
         )
         .arg(
+            Arg::with_name("enclave_server")
+                .long("enclave-server")
+                .help("Changes proxy mode to listen on a TCP port and connect to a server over Vsock.")
+                .required(false)
+                .number_of_values(3),
+        )
+        .arg(
             Arg::with_name("local_port")
                 .help("Local Vsock port to listen for incoming connections.")
-                .required(true),
+                .required_unless("enclave_server"),
         )
         .arg(
             Arg::with_name("remote_addr")
                 .help("Address of the server to be proxyed.")
-                .required(true),
+                .required_unless("enclave_server"),
         )
         .arg(
             Arg::with_name("remote_port")
                 .help("Remote TCP port of the server to be proxyed.")
-                .required(true),
+                .required_unless("enclave_server"),
         )
         .arg(
             Arg::with_name("config_file")
@@ -65,30 +72,31 @@ fn main() -> VsockProxyResult<()> {
                 .takes_value(true)
                 .default_value("/etc/nitro_enclaves/vsock-proxy.yaml"),
         )
+        .arg(
+            Arg::with_name("exposed_port")
+                .help("TCP port the proxy listens on.")
+                .required(false),
+        )
+        .arg(
+            Arg::with_name("remote_cid")
+                .help("CID of the enclave containing the server app.")
+                .required(false),
+        )
+        .arg(
+            Arg::with_name("vsock_port")
+                .help("Vsock port to connect to the server.")
+                .required(false),
+        )
         .get_matches();
 
-    let local_port = matches
-        .value_of("local_port")
-        // This argument is required, so clap ensures it's available
-        .unwrap();
-    let local_port = local_port
-        .parse::<u32>()
-        .map_err(|_| "Local port is not valid")?;
+    let proxy_type = if matches.is_present("enclave-server") {
+        ProxyType::ServerOverVsock
+    } else {
+        ProxyType::ClientOverVsock
+    };
 
     let only_4 = matches.is_present("ipv4");
     let only_6 = matches.is_present("ipv6");
-    let remote_addr = matches
-        .value_of("remote_addr")
-        // This argument is required, so clap ensures it's available
-        .unwrap();
-
-    let remote_port = matches
-        .value_of("remote_port")
-        // This argument is required, so clap ensures it's available
-        .unwrap();
-    let remote_port = remote_port
-        .parse::<u16>()
-        .map_err(|_| "Remote port is not valid")?;
 
     let num_workers = matches
         .value_of("workers")
@@ -100,24 +108,80 @@ fn main() -> VsockProxyResult<()> {
 
     let config_file = matches.value_of("config_file");
 
-    let proxy = Proxy::new(
-        local_port,
-        remote_addr,
-        remote_port,
-        num_workers,
-        config_file,
-        only_4,
-        only_6,
-    )
-    .map_err(|err| format!("Could not create proxy: {}", err))?;
+    match proxy_type {
+        ProxyType::ClientOverVsock => {
+            let local_port = matches
+                .value_of("local_port")
+                // This argument is required, so clap ensures it's available
+                .unwrap();
+            let local_port = local_port
+                .parse::<u32>()
+                .map_err(|_| "Local port is not valid")?;
 
-    let listener = proxy
-        .sock_listen()
-        .map_err(|err| format!("Could not listen for connections: {}", err))?;
-    info!("Proxy is now in listening state");
-    loop {
-        proxy
-            .sock_accept(&listener)
-            .map_err(|err| format!("Could not accept connection: {}", err))?;
+            let remote_addr = matches
+                .value_of("remote_addr")
+                // This argument is required, so clap ensures it's available
+                .unwrap();
+
+            let remote_port = matches
+                .value_of("remote_port")
+                // This argument is required, so clap ensures it's available
+                .unwrap();
+            let remote_port = remote_port
+                .parse::<u16>()
+                .map_err(|_| "Remote port is not valid")?;
+
+            let proxy = Proxy::new(
+                proxy_type,
+                ProxyArgs::new_client_over_vsock(local_port, remote_addr.to_string(), remote_port)
+                    .map_err(|err| format!("Could not create proxy: {}", err))?,
+                num_workers,
+                config_file,
+                only_4,
+                only_6,
+            )
+            .map_err(|err| format!("Could not create proxy: {}", err))?;
+
+            let listener = proxy
+                .sock_listen()
+                .map_err(|err| format!("Could not listen for connections: {}", err))?;
+            info!("Proxy is now in listening state");
+            loop {
+                proxy
+                    .sock_accept(&listener)
+                    .map_err(|err| format!("Could not accept connection: {}", err))?;
+            }
+        }
+        ProxyType::ServerOverVsock => {
+            let args: Vec<_> = matches.values_of("enclave_server").unwrap().collect();
+
+            let exposed_port = args.get(0).unwrap();
+            let exposed_port = exposed_port
+                .parse::<u16>()
+                .map_err(|_| "Exposed port is not valid")?;
+
+            let remote_cid = args.get(1).unwrap();
+            let remote_cid = remote_cid.parse::<u32>().map_err(|_| "CID is not valid")?;
+
+            let vsock_port = args.get(2).unwrap();
+            let vsock_port = vsock_port
+                .parse::<u32>()
+                .map_err(|_| "Vsock port is not valid")?;
+
+            let proxy = Proxy::new(
+                proxy_type,
+                ProxyArgs::new_server_over_vsock(exposed_port, remote_cid, vsock_port)
+                    .map_err(|err| format!("Could not create proxy: {}", err))?,
+                num_workers,
+                config_file,
+                only_4,
+                only_6,
+            )
+            .map_err(|err| format!("Could not create proxy: {}", err))?;
+
+            info!("Proxy created {:#?}", proxy.proxy_args.exposed_port);
+
+            Ok(())
+        }
     }
 }

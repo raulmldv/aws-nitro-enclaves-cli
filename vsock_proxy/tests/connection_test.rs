@@ -11,7 +11,7 @@ use std::thread;
 use tempfile::NamedTempFile;
 use vsock::{SockAddr, VsockStream};
 
-use vsock_proxy::starter::Proxy;
+use vsock_proxy::starter::{Proxy, ProxyArgs, ProxyType};
 
 fn vsock_connect(port: u32) -> VsockStream {
     let sockaddr = SockAddr::new_vsock(vsock_proxy::starter::VSOCK_PROXY_CID, port);
@@ -29,10 +29,11 @@ fn test_tcp_connection() {
             - {address: 127.0.0.1, port: 9000}",
     )
     .unwrap();
+
     let proxy = Proxy::new(
-        vsock_proxy::starter::VSOCK_PROXY_PORT,
-        &addr,
-        9000,
+        ProxyType::ClientOverVsock,
+        ProxyArgs::new_client_over_vsock(vsock_proxy::starter::VSOCK_PROXY_PORT, addr, 9000)
+            .unwrap(),
         2,
         file.path().to_str(),
         false,
