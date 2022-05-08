@@ -12,15 +12,15 @@ use nix::sys::select::{select, FdSet};
 use nix::sys::socket::SockType;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 use std::os::unix::io::AsRawFd;
 use threadpool::ThreadPool;
-use vsock::SockAddr;
-use vsock::VsockListener;
+use vsock::{SockAddr, VsockListener, VsockStream};
 use yaml_rust::YamlLoader;
 
 const BUFF_SIZE: usize = 8192;
 pub const VSOCK_PROXY_CID: u32 = 3;
+pub const VSOCK_CID_ANY: u32 = 0xFFFFFFFF;
 pub const VSOCK_PROXY_PORT: u32 = 8000;
 pub const DEFAULT_VALUE: u32 = 0;
 pub const DEFAULT_PORT: u16 = 0;
@@ -228,12 +228,25 @@ impl Proxy {
         }
     }
 
-    /// Creates a listening socket
+    /// Creates a listening vsock socket
     /// Returns the file descriptor for it or the appropriate error
-    pub fn sock_listen(&self) -> VsockProxyResult<VsockListener> {
-        let sockaddr = SockAddr::new_vsock(VSOCK_PROXY_CID, self.proxy_args.local_port);
+    pub fn vsock_listen(&self) -> VsockProxyResult<VsockListener> {
+        let sockaddr = SockAddr::new_vsock(VSOCK_CID_ANY, self.proxy_args.local_port);
         let listener = VsockListener::bind(&sockaddr)
             .map_err(|_| format!("Could not bind to {:?}", sockaddr))?;
+        info!("Bound to {:?}", sockaddr);
+
+        Ok(listener)
+    }
+
+    /// Creates a listening TCP socket
+    /// Returns the file descriptor for it or the appropriate error
+    pub fn sock_listen(&self) -> VsockProxyResult<TcpListener> {
+        // TODO: Check IPv4 or IPv6 parameter
+        let loopback = Ipv4Addr::new(127, 0, 0, 1);
+        let sockaddr = SocketAddrV4::new(loopback, self.proxy_args.exposed_port);
+        let listener =
+            TcpListener::bind(sockaddr).map_err(|_| format!("Could not bind to {:?}", sockaddr))?;
         info!("Bound to {:?}", sockaddr);
 
         Ok(listener)
@@ -242,7 +255,7 @@ impl Proxy {
     /// Accepts an incoming connection coming on listener and handles it on a
     /// different thread
     /// Returns the handle for the new thread or the appropriate error
-    pub fn sock_accept(&self, listener: &VsockListener) -> VsockProxyResult<()> {
+    pub fn vsock_accept(&self, listener: &VsockListener) -> VsockProxyResult<()> {
         let (mut client, client_addr) = listener
             .accept()
             .map_err(|_| "Could not accept connection")?;
@@ -253,6 +266,58 @@ impl Proxy {
         self.pool.execute(move || {
             let mut server = match sock_type {
                 SockType::Stream => TcpStream::connect(sockaddr)
+                    .map_err(|_| format!("Could not connect to {:?}", sockaddr)),
+                _ => Err("Socket type not implemented".to_string()),
+            }
+            .expect("Could not create connection");
+            info!("Connected client from {:?} to {:?}", client_addr, sockaddr);
+
+            let client_socket = client.as_raw_fd();
+            let server_socket = server.as_raw_fd();
+
+            let mut disconnected = false;
+            while !disconnected {
+                let mut set = FdSet::new();
+                set.insert(client_socket);
+                set.insert(server_socket);
+
+                select(None, Some(&mut set), None, None, None).expect("select");
+
+                if set.contains(client_socket) {
+                    disconnected = transfer(&mut client, &mut server);
+                }
+                if set.contains(server_socket) {
+                    disconnected = transfer(&mut server, &mut client);
+                }
+            }
+            info!("Client on {:?} disconnected", client_addr);
+        });
+
+        Ok(())
+    }
+
+    /// Accepts an incoming connection coming on listener and handles it on a
+    /// different thread
+    /// Returns the handle for the new thread or the appropriate error
+    pub fn sock_accept(&self, listener: &TcpListener) -> VsockProxyResult<()> {
+        let (mut client, client_addr) = listener
+            .accept()
+            .map_err(|_| "Could not accept connection")?;
+        info!("Accepted connection on {:?}", client_addr);
+
+        let sockaddr = SockAddr::new_vsock(self.proxy_args.remote_cid, self.proxy_args.vsock_port);
+        let sock_type = self.sock_type;
+        // let vsocket: RawFd = socket(
+        //     AddressFamily::Vsock,
+        //     sock_type,
+        //     SockFlag::empty(),
+        //     None
+        // ).map_err(|err| format!("Failed to create the socket: {:?}", err))?;
+        self.pool.execute(move || {
+            let mut server = match sock_type {
+                // SockType::Stream => connect(vsocket, &sockaddr)
+                //     .map_err(|_| format!("Could not connect to {:?}", sockaddr)),
+                SockType::Stream => VsockStream::connect(&sockaddr)
                     .map_err(|_| format!("Could not connect to {:?}", sockaddr)),
                 _ => Err("Socket type not implemented".to_string()),
             }

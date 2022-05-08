@@ -63,11 +63,11 @@ fn test_tcp_connection() {
     let (tx, rx) = mpsc::channel();
 
     // Start proxy in a different thread
-    let ret = proxy.sock_listen();
+    let ret = proxy.vsock_listen();
     let listener = ret.expect("proxy listen");
     let proxy_handle = thread::spawn(move || {
         tx.send(true).expect("proxy send event");
-        let _ret = proxy.sock_accept(&listener).expect("proxy accept");
+        let _ret = proxy.vsock_accept(&listener).expect("proxy accept");
     });
 
     let _ret = rx.recv().expect("main recv event");

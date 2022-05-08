@@ -89,7 +89,7 @@ fn main() -> VsockProxyResult<()> {
         )
         .get_matches();
 
-    let proxy_type = if matches.is_present("enclave-server") {
+    let proxy_type = if matches.is_present("enclave_server") {
         ProxyType::ServerOverVsock
     } else {
         ProxyType::ClientOverVsock
@@ -143,12 +143,12 @@ fn main() -> VsockProxyResult<()> {
             .map_err(|err| format!("Could not create proxy: {}", err))?;
 
             let listener = proxy
-                .sock_listen()
+                .vsock_listen()
                 .map_err(|err| format!("Could not listen for connections: {}", err))?;
             info!("Proxy is now in listening state");
             loop {
                 proxy
-                    .sock_accept(&listener)
+                    .vsock_accept(&listener)
                     .map_err(|err| format!("Could not accept connection: {}", err))?;
             }
         }
@@ -181,7 +181,15 @@ fn main() -> VsockProxyResult<()> {
 
             info!("Proxy created {:#?}", proxy.proxy_args.exposed_port);
 
-            Ok(())
+            let listener = proxy
+                .sock_listen()
+                .map_err(|err| format!("Could not listen for connections: {}", err))?;
+            info!("Proxy is now in listening state");
+            loop {
+                proxy
+                    .sock_accept(&listener)
+                    .map_err(|err| format!("Could not accept connection: {}", err))?;
+            }
         }
     }
 }
