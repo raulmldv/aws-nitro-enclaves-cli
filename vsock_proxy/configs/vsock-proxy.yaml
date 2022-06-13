@@ -50,3 +50,5 @@ allowlist:
 - {address: kms.us-gov-west-1.amazonaws.com, port: 443}
 - {address: kms-fips.us-gov-west-1.amazonaws.com, port: 443}
 - {address: 127.0.0.1, port: 5000}
+- {address: 0.0.0.0, port: 8000}
+- {address: 0.0.0.0, port: 8765}
