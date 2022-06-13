@@ -55,6 +55,9 @@ DATA_DIR              ?= /usr/share
 ENV_SETUP_DIR		  ?= $(CONF_DIR)/profile.d
 
 CONTAINER_TAG = "nitro_cli:1.0"
+NITRO_CLI = target/release/nitro-cli
+EXECUTER_PATH = build/command-executer/command_executer_docker_dir/command-executer
+SOCK_BLOBS = /home/ubuntu/aws-nitro-enclaves-sdk-bootstrap/socket-impersonation
 
 # Flags common to C
 C_FLAGS := -Wall -Wextra -Werror -O2
@@ -177,14 +180,14 @@ nitro-cli-native:
 
 .build-command-executer-eif: .build-nitro-cli .build-command-executer \
 	$(BASE_PATH)/samples/command_executer/resources/blobs/${HOST_MACHINE}/* \
-	$(BASE_PATH)/samples/command_executer/resources/Dockerfile.alpine
+	$(BASE_PATH)/samples/command_executer/resources/Dockerfile
 
 	$(MKDIR) -p $(OBJ_PATH)/command-executer/command_executer_docker_dir
 	$(CP) \
 		$(OBJ_PATH)/command-executer/${CARGO_TARGET}/release/command-executer \
 		$(OBJ_PATH)/command-executer/command_executer_docker_dir
 	$(CP) \
-		$(BASE_PATH)/samples/command_executer/resources/Dockerfile.alpine \
+		$(BASE_PATH)/samples/command_executer/resources/Dockerfile \
 		$(OBJ_PATH)/command-executer/command_executer_docker_dir/Dockerfile
 	$(DOCKER) run \
 		-v "$$(readlink -f ${BASE_PATH})":/nitro_src \
@@ -201,6 +204,22 @@ nitro-cli-native:
 
 command-executer: build-setup build-container .build-command-executer-eif
 
+run-tcp-enclave:
+	./${NITRO_CLI} run-enclave --cpu-count 2 --memory 2500 \
+	--enclave-cid 16 --eif-path \
+	/home/ubuntu/aws-nitro-enclaves-cli/build/command-executer/command_executer.eif \
+	--debug-mode --enclave-name executer
+	./${EXECUTER_PATH} send-file --cid 16 --localpath "${SOCK_BLOBS}/socket_imp.ko" --port 5005 --remotepath "socket_imp.ko"
+	./${EXECUTER_PATH} send-file --cid 16 --localpath "/home/ubuntu/vsock-http-samples/rust-http/client/target/release/client" --port 5005 --remotepath "client"
+	./${EXECUTER_PATH} run --cid 16 --port 5005 --command "chmod 777 client"
+	./${EXECUTER_PATH} send-file --cid 16 --localpath "/home/ubuntu/vsock-http-samples/rust-http/server/target/release/server" --port 5005 --remotepath "server"
+	./${EXECUTER_PATH} run --cid 16 --port 5005 --command "chmod 777 server"
+	./${EXECUTER_PATH} send-file --cid 16 --localpath "/home/ubuntu/vsock-http-samples/rust-tcp-io-perf/code/target/release/client-latency" --port 5005 --remotepath "client-latency"
+	./${EXECUTER_PATH} run --cid 16 --port 5005 --command "chmod 777 client-latency"
+	./${EXECUTER_PATH} send-file --cid 16 --localpath "/home/ubuntu/vsock-http-samples/rust-tcp-io-perf/code/target/release/server-latency" --port 5005 --remotepath "server-latency"
+	./${EXECUTER_PATH} run --cid 16 --port 5005 --command "chmod 777 server-latency"
+	./${EXECUTER_PATH} run --cid 16 --port 5005 --command "insmod socket_imp.ko"
+	
 # See .build-container rule for explanation.
 .build-nitro-tests: $(BASE_PATH)/tests
 	$(DOCKER) run \
