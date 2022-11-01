@@ -103,6 +103,8 @@ pub struct BuildEnclavesArgs {
     pub docker_dir: Option<String>,
     /// The URI of an OCI image.
     pub oci_uri: Option<String>,
+    /// Path to the archive containing the OCI image.
+    pub oci_tar: Option<String>,
     /// The path where the enclave image file will be written to.
     pub output: String,
     /// The path to the signing certificate for signed enclaves.
@@ -144,6 +146,7 @@ impl BuildEnclavesArgs {
         let docker_uri = parse_docker_tag(args);
         let docker_dir = parse_docker_dir(args);
         let oci_uri = parse_oci_image_name(args);
+        let oci_tar = parse_oci_tar(args);
 
         match (&docker_uri, &docker_dir, &oci_uri) {
             // The --docker-uri and --oci-uri flag can not be both used at the same time
@@ -177,6 +180,7 @@ impl BuildEnclavesArgs {
             docker_uri,
             docker_dir,
             oci_uri,
+            oci_tar,
             output: parse_output(args).ok_or_else(|| {
                 new_nitro_cli_failure!(
                     "`output` argument not found",
@@ -349,6 +353,11 @@ fn parse_docker_dir(args: &ArgMatches) -> Option<String> {
 /// Parse the OCI image URI from the command-line arguments
 fn parse_oci_image_name(args: &ArgMatches) -> Option<String> {
     args.value_of("oci-uri").map(|val| val.to_string())
+}
+
+/// Parse the OCI archive path from the command-line arguments.
+fn parse_oci_tar(args: &ArgMatches) -> Option<String> {
+    args.value_of("oci-tar").map(|val| val.to_string())
 }
 
 /// Parse the enclave's required CID from the command-line arguments.

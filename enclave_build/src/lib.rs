@@ -104,6 +104,7 @@ pub struct SourceArgs {
     pub docker_image: Option<String>,
     pub docker_dir: Option<String>,
     pub oci_image: Option<String>,
+    pub oci_tar: Option<String>,
 }
 
 pub struct Docker2Eif<'a> {

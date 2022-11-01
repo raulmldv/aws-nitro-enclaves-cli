@@ -57,6 +57,7 @@ pub fn build_enclaves(args: BuildEnclavesArgs) -> NitroCliResult<()> {
         &args.docker_uri,
         &args.docker_dir,
         &args.oci_uri,
+        &args.oci_tar,
         &args.output,
         &args.signing_certificate,
         &args.private_key,
@@ -73,6 +74,7 @@ pub fn build_from_docker(
     docker_uri: &Option<String>,
     docker_dir: &Option<String>,
     oci_uri: &Option<String>,
+    oci_tar: &Option<String>,
     output_path: &str,
     signing_certificate: &Option<String>,
     private_key: &Option<String>,
@@ -132,6 +134,7 @@ pub fn build_from_docker(
         docker_image: docker_uri.clone(),
         docker_dir: docker_dir.clone(),
         oci_image: oci_uri.clone(),
+        oci_tar: oci_tar.clone(),
     };
     let blobs = BlobsArgs {
         init_path: format!("{}/init", blobs_path),
@@ -735,6 +738,12 @@ macro_rules! create_app {
                         Arg::with_name("oci-uri")
                             .long("oci-uri")
                             .help("URI of an OCI image to pe pulled and cached without using the Docker daemon")
+                            .takes_value(true),
+                    )
+                    .arg(
+                        Arg::with_name("oci-tar")
+                            .long("oci-tar")
+                            .help(".tar archive containing an OCI image")
                             .takes_value(true),
                     )
                     .arg(

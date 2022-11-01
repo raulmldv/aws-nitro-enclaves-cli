@@ -31,6 +31,12 @@ fn main() {
                 .takes_value(true)
         )
         .arg(
+            Arg::with_name("oci_tar")
+                .long("oci-tar")
+                .help("OCI image .tar archive")
+                .takes_value(true)
+        )
+        .arg(
             Arg::with_name("init_path")
                 .short('i')
                 .long("init")
@@ -136,6 +142,7 @@ fn main() {
     let docker_image = matches.value_of("docker_image").map(|val| val.to_string());
     let docker_dir = matches.value_of("docker_dir").map(|val| val.to_string());
     let oci_image = matches.value_of("oci_image").map(|val| val.to_string());
+    let oci_tar = matches.value_of("oci_tar").map(|val| val.to_string());
     let init_path = matches.value_of("init_path").unwrap();
     let nsm_path = matches.value_of("nsm_path").unwrap();
     let kernel_img_path = matches.value_of("kernel_img_path").unwrap();
@@ -164,6 +171,7 @@ fn main() {
         docker_image,
         docker_dir,
         oci_image,
+        oci_tar,
     };
     let blobs = BlobsArgs {
         init_path: init_path.to_string(),
