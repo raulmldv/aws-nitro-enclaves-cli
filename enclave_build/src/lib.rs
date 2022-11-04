@@ -12,7 +12,7 @@ mod yaml_generator;
 use aws_nitro_enclaves_image_format::defs::{EifBuildInfo, EifIdentityInfo, EIF_HDR_ARCH_ARM64};
 use aws_nitro_enclaves_image_format::utils::identity::parse_custom_metadata;
 use aws_nitro_enclaves_image_format::utils::{EifBuilder, SignEnclaveInfo};
-use docker::{DockerError, DockerUtil};
+use docker::DockerUtil;
 use serde_json::json;
 use sha2::Digest;
 use std::collections::BTreeMap;
@@ -23,8 +23,8 @@ pub const DEFAULT_TAG: &str = "1.0";
 
 #[derive(Debug, Error)]
 pub enum EnclaveBuildError {
-    #[error("Docker error: `{0:?}`")]
-    DockerError(DockerError),
+    #[error("Docker error: `{0}`")]
+    DockerError(String),
     #[error("Invalid path: `{0}`")]
     PathError(String),
     #[error("Image pull error: `{0}`")]
@@ -162,10 +162,7 @@ impl<'a> Docker2Eif<'a> {
     }
 
     pub fn pull_docker_image(&self) -> Result<()> {
-        self.docker.pull_image().map_err(|e| {
-            eprintln!("Docker error: {:?}", e);
-            EnclaveBuildError::DockerError(e)
-        })?;
+        self.docker.pull_image()?;
 
         Ok(())
     }
@@ -174,19 +171,13 @@ impl<'a> Docker2Eif<'a> {
         if !Path::new(&dockerfile_dir).is_dir() {
             return Err(EnclaveBuildError::PathError("Dockerfile path".to_string()));
         }
-        self.docker.build_image(dockerfile_dir).map_err(|e| {
-            eprintln!("Docker error: {:?}", e);
-            EnclaveBuildError::DockerError(e)
-        })?;
+        self.docker.build_image(dockerfile_dir)?;
 
         Ok(())
     }
 
     fn generate_identity_info(&self) -> Result<EifIdentityInfo> {
-        let docker_info = self
-            .docker
-            .inspect_image()
-            .map_err(EnclaveBuildError::DockerError)?;
+        let docker_info = self.docker.inspect_image()?;
 
         let uri_split: Vec<&str> = self.docker_image.split(':').collect();
         if uri_split.is_empty() {
@@ -233,10 +224,7 @@ impl<'a> Docker2Eif<'a> {
     }
 
     pub fn create(&mut self) -> Result<BTreeMap<String, String>> {
-        let (cmd_file, env_file) = self.docker.load().map_err(|e| {
-            eprintln!("Docker error: {:?}", e);
-            EnclaveBuildError::DockerError(e)
-        })?;
+        let (cmd_file, env_file) = self.docker.load()?;
 
         let yaml_generator = YamlGenerator::new(
             self.docker_image.clone(),
@@ -306,10 +294,7 @@ impl<'a> Docker2Eif<'a> {
             )));
         }
 
-        let arch = self.docker.architecture().map_err(|e| {
-            eprintln!("Docker error: {:?}", e);
-            EnclaveBuildError::DockerError(e)
-        })?;
+        let arch = self.docker.architecture()?;
 
         let flags = match arch.as_str() {
             docker::DOCKER_ARCH_ARM64 => EIF_HDR_ARCH_ARM64,
