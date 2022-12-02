@@ -10,6 +10,7 @@ mod docker;
 mod image;
 mod pull;
 mod yaml_generator;
+mod cache;
 
 use aws_nitro_enclaves_image_format::defs::{EifBuildInfo, EifIdentityInfo, EIF_HDR_ARCH_ARM64};
 use aws_nitro_enclaves_image_format::utils::identity::parse_custom_metadata;
