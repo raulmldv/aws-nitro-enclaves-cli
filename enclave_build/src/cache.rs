@@ -4,7 +4,7 @@
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
-    io::{Error, ErrorKind, Write},
+    io::{Error, ErrorKind, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -242,6 +242,147 @@ impl CacheManager {
         Ok(())
     }
 
+    /// Determines if an image is stored correctly in the cache represented by the current CacheManager object.
+    pub fn check_cached_image(&self, image_name: &str) -> Result<()> {
+        // Check that the index.json file exists
+        let index: CacheIndex = Self::fetch_index(&self.root_path)?;
+
+        // The image is theoretically cached, but check the manifest, config and layers to validate
+        // that the image data is stored correctly
+
+        // First validate the manifest
+        // Since the struct pulled by the oci_distribution API does not contain the manifest digest,
+        // and another HTTP request should be made to get the digest, just check that the manifest file
+        // exists and has the right structure for the next validations
+        let manifest_json = self
+            .fetch_manifest_from_index(&image_name, index)
+            .map_err(|_| EnclaveBuildError::ManifestError)?;
+
+        // The manifest is checked, so now validate the layers from the manifest
+        self.validate_layers(&manifest_json)?;
+
+        // Extract the config digest from the manifest
+        let config_digest = Self::fetch_config_digest(manifest_json)?;
+
+        // Finally, check that the config is correctly cached
+        // This is done by applying a hash function on the config file contents and comparing the
+        // result with the config digest from the manifest
+        let config_str = self.fetch_config(&config_digest)?;
+
+        // Compare the two digests
+        if config_digest != format!("{:x}", sha2::Sha256::digest(config_str.as_bytes())) {
+            return Err(EnclaveBuildError::CacheMissError(
+                "Config content digest and manifest digest do not match".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Validates that the image layers are cached correctly by checking them with the layer descriptors
+    /// from the image manifest.
+    fn validate_layers(&self, manifest_obj: &Value) -> Result<()> {
+        let layers_path = self.root_path.join(CACHE_BLOBS_FOLDER);
+
+        // Try to get the layer list from the manifest JSON
+        let layers_vec = manifest_obj
+            .get("layers")
+            .ok_or_else(|| {
+                EnclaveBuildError::CacheMissError(
+                    "'layers' field missing from manifest JSON.".to_string(),
+                )
+            })?
+            .as_array()
+            .ok_or_else(|| {
+                EnclaveBuildError::CacheMissError("Manifest deserialize error.".to_string())
+            })?
+            .to_vec();
+
+        // Get the cached blobs as a HashMap mapping a layer digest to the corresponding layer file
+        let mut cached_blobs = HashMap::new();
+
+        fs::read_dir(layers_path)
+            .map_err(|err| {
+                EnclaveBuildError::CacheMissError(format!("Failed to get image layers: {:?}", err))
+            })?
+            .into_iter()
+            // Get only the valid directory entries that are valid files and return (name, file) pair
+            .filter_map(|entry| match entry {
+                Ok(dir_entry) => match File::open(dir_entry.path()) {
+                    Ok(file) => Some((dir_entry.file_name(), file)),
+                    Err(_) => None,
+                },
+                Err(_) => None,
+            })
+            // Map a layer digest to the layer file
+            // The 'cached_layers' hashmap will contain all layer files found in the cache for the current image
+            .for_each(|(name, file)| {
+                if let Ok(file_name) = name.into_string() {
+                    cached_blobs.insert(file_name, file);
+                }
+            });
+
+        // Iterate through each layer found in the image manifest and validate that it is stored in
+        // the cache by checking the digest
+        for layer_obj in layers_vec {
+            // Read the layer digest from the manifest
+            let layer_digest: String = layer_obj
+                .get("digest")
+                .ok_or_else(|| {
+                    EnclaveBuildError::CacheMissError(
+                        "Image layer digest not found in manifest".to_string(),
+                    )
+                })?
+                .as_str()
+                .ok_or_else(|| {
+                    EnclaveBuildError::CacheMissError("Layer info extract error".to_string())
+                })?
+                .strip_prefix("sha256:")
+                .ok_or_else(|| {
+                    EnclaveBuildError::CacheMissError("Layer info extract error".to_string())
+                })?
+                .to_string();
+
+            // Get the cached layer file matching the digest
+            // If not present, then a layer file is missing, so return Error
+            let mut layer_file = cached_blobs.get(&layer_digest).ok_or_else(|| {
+                EnclaveBuildError::CacheMissError("Layer missing from cache.".to_string())
+            })?;
+            let mut layer_bytes = Vec::new();
+            layer_file.read_to_end(&mut layer_bytes).map_err(|_| {
+                EnclaveBuildError::CacheMissError("Failed to read layer".to_string())
+            })?;
+
+            let calc_digest = format!("{:x}", sha2::Sha256::digest(layer_bytes.as_slice()));
+
+            // Check that the digests match
+            if calc_digest != layer_digest {
+                return Err(EnclaveBuildError::CacheMissError(
+                    "Layer not valid".to_string(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns the manifest JSON string from the cache.
+    fn fetch_manifest_from_index(&self, image_name: &str, index: CacheIndex) -> Result<Value> {
+        let img_ref =
+            Self::normalize_reference(&image::build_image_reference(&image_name)?.whole());
+        let manifest_entry = index
+            .manifests
+            .iter()
+            .filter(|entry| match entry.annotations.get(REF_ANNOTATION) {
+                Some(value) => img_ref == value.to_string(),
+                None => false,
+            })
+            .next()
+            .ok_or(EnclaveBuildError::ManifestError)?;
+
+        Self::fetch_manifest(&self.root_path, &manifest_entry.digest)
+    }
+
     /// Fetch index file from the cache root path
     fn fetch_index(root_path: &Path) -> Result<CacheIndex> {
         Ok(match File::options()
@@ -270,6 +411,23 @@ impl CacheManager {
             serde_json::from_reader(file).map_err(EnclaveBuildError::SerdeError)?;
 
         Ok(manifest_json)
+    }
+
+    /// Returns the config JSON string from the cache.
+    fn fetch_config(&self, config_digest: &str) -> Result<String> {
+        let target_path = self.root_path.join(CACHE_BLOBS_FOLDER);
+
+        let mut config_json = String::new();
+        File::open(target_path.join(config_digest))
+            .map_err(|_| EnclaveBuildError::ConfigError)?
+            .read_to_string(&mut config_json)
+            .map_err(|_| EnclaveBuildError::ConfigError)?;
+
+        if config_json.is_empty() {
+            return Err(EnclaveBuildError::ConfigError);
+        }
+
+        Ok(config_json)
     }
 
     /// Extract config digest from manifest
@@ -345,6 +503,61 @@ pub mod tests {
     }
 
     #[test]
+    fn test_image_is_cached() {
+        let (_cache_root_path, cache_manager) = setup_temp_cache();
+
+        let res = cache_manager.check_cached_image(image::tests::TEST_IMAGE_NAME);
+
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_image_is_not_cached() {
+        let (cache_root_path, cache_manager) = setup_temp_cache();
+
+        // Delete the index file so that check_cached_image() returns error
+        let index_file_path = cache_root_path.join(CACHE_INDEX_FILE_NAME);
+        fs::remove_file(&index_file_path).expect("could not remove the cache index file");
+
+        let res = cache_manager.check_cached_image(image::tests::TEST_IMAGE_NAME);
+
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_validate_layers() {
+        let (cache_root_path, cache_manager) = setup_temp_cache();
+
+        // Digest of the layer to be deleted
+        let delete_layer_digest =
+            "1aed4d8555515c961bffea900d5e7f1c1e4abf0f6da250d8bf15843106e0533b";
+
+        let layer_path = cache_root_path
+            .join(CACHE_BLOBS_FOLDER)
+            .join(delete_layer_digest);
+        fs::remove_file(&layer_path).expect("could not remove the layer file");
+
+        let res = cache_manager.check_cached_image(image::tests::TEST_IMAGE_NAME);
+
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_fetch_manifest_from_index() {
+        let (_cache_root_path, cache_manager) = setup_temp_cache();
+
+        let index: CacheIndex = CacheManager::fetch_index(&cache_manager.root_path).unwrap();
+        let manifest = cache_manager
+            .fetch_manifest_from_index(image::tests::TEST_IMAGE_NAME, index)
+            .unwrap();
+
+        let expected_manifest: serde_json::Value =
+            serde_json::from_str(image::tests::TEST_MANIFEST).unwrap();
+
+        assert_eq!(manifest, expected_manifest);
+    }
+
+    #[test]
     fn test_fetch_index() {
         let (cache_root_path, _cache_manager) = setup_temp_cache();
 
@@ -400,6 +613,20 @@ pub mod tests {
         let val: serde_json::Value = serde_json::from_str(image::tests::TEST_MANIFEST).unwrap();
 
         assert_eq!(cached_manifest, val);
+    }
+
+    #[test]
+    fn test_fetch_config() {
+        let (_cache_root_path, cache_manager) = setup_temp_cache();
+
+        let cached_config = cache_manager
+            .fetch_config(image::tests::TEST_IMAGE_HASH)
+            .expect("failed to fetch image config from cache");
+
+        let val1: serde_json::Value = serde_json::from_str(cached_config.as_str()).unwrap();
+        let val2: serde_json::Value = serde_json::from_str(image::tests::TEST_CONFIG).unwrap();
+
+        assert_eq!(val1, val2);
     }
 
     #[test]
