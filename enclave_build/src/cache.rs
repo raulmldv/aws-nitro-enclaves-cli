@@ -4,13 +4,16 @@
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
+    io::{Error, ErrorKind, Write},
     path::{Path, PathBuf},
 };
 
+use oci_distribution::client::ImageData;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
+use sha2::Digest;
 
-use crate::{EnclaveBuildError, Result};
+use crate::{image, EnclaveBuildError, Result};
 
 /// Root folder for the cache.
 pub const CACHE_ROOT_FOLDER: &str = "XDG_DATA_HOME";
@@ -144,6 +147,102 @@ impl CacheManager {
         })
     }
 
+    /// Stores the image data provided as argument in the cache at the folder pointed
+    /// by the 'root_path' field.
+    pub fn store_image_data(&mut self, image_name: &str, image_data: &ImageData) -> Result<()> {
+        // Create the folder where the image data will be stored. Each image blob will be stored in
+        // a file named by the SHA256 digest of the content.
+        let blobs_path = self.root_path.join(CACHE_BLOBS_FOLDER);
+        fs::create_dir_all(&blobs_path).map_err(EnclaveBuildError::CacheStoreError)?;
+
+        for layer in &image_data.layers {
+            // Each layer file will be named after the layer's digest hash
+            let layer_file_path =
+                blobs_path.join(format!("{:x}", sha2::Sha256::digest(&layer.data)));
+            File::create(&layer_file_path)
+                .map_err(EnclaveBuildError::CacheStoreError)?
+                .write_all(&layer.data)
+                .map_err(EnclaveBuildError::CacheStoreError)?;
+        }
+
+        // Store the manifest
+        let manifest = image_data
+            .manifest
+            .as_ref()
+            .ok_or_else(|| EnclaveBuildError::ManifestError)?;
+        let manifest_bytes = serde_json::to_vec(manifest).map_err(EnclaveBuildError::SerdeError)?;
+
+        File::create(&blobs_path.join(format!("{:x}", sha2::Sha256::digest(&manifest_bytes))))
+            .map_err(EnclaveBuildError::CacheStoreError)?
+            .write_all(&manifest_bytes)
+            .map_err(EnclaveBuildError::CacheStoreError)?;
+
+        // Store the config and validate UTF8 bytes
+        let config_json = String::from_utf8(image_data.config.data.clone()).map_err(|_| {
+            EnclaveBuildError::CacheStoreError(Error::new(
+                ErrorKind::InvalidData,
+                "Config data invalid",
+            ))
+        })?;
+        let config_digest = format!("{:x}", sha2::Sha256::digest(&config_json.as_bytes()));
+
+        File::create(&blobs_path.join(&config_digest))
+            .map_err(EnclaveBuildError::CacheStoreError)?
+            .write_all(config_json.as_bytes())
+            .map_err(EnclaveBuildError::CacheStoreError)?;
+
+        // If index file present, read and append new image entry
+        let index_json: CacheIndex = match File::options().read(true).open(CACHE_INDEX_FILE_NAME) {
+            Ok(file) => serde_json::from_reader(file).map_err(EnclaveBuildError::SerdeError)?,
+            Err(_) => CacheIndex::default(),
+        };
+        let mut index_content = index_json;
+        let image_ref =
+            Self::normalize_reference(&image::build_image_reference(&image_name)?.whole());
+
+        // Create manifest entry in the index file
+        let new_manifest = ManifestEntry {
+            media_type: manifest
+                .media_type
+                .as_ref()
+                .unwrap_or(&DEFAULT_MEDIA_TYPE.to_string())
+                .to_string(),
+            size: manifest_bytes.len(),
+            digest: format!("sha256:{:x}", sha2::Sha256::digest(&manifest_bytes)),
+            annotations: HashMap::from([(REF_ANNOTATION.to_string(), image_ref.clone())]),
+        };
+
+        // If all image data was successfully stored, add the image to the index file
+        index_content.manifests.push(new_manifest);
+        let index_file = File::options()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(self.root_path.join(CACHE_INDEX_FILE_NAME))
+            .map_err(EnclaveBuildError::CacheStoreError)?;
+
+        // Write index file content
+        serde_json::to_writer(index_file, &index_content).map_err(EnclaveBuildError::SerdeError)?;
+
+        // Write oci_layout file from template constant
+        let layout_content = json!(HashMap::from([OCI_LAYOUT]));
+
+        let layout_file = File::options()
+            .create(true)
+            .write(true)
+            .open(self.root_path.join(CACHE_OCI_LAYOUT_FILE))
+            .map_err(EnclaveBuildError::CacheStoreError)?;
+
+        serde_json::to_writer(layout_file, &layout_content)
+            .map_err(EnclaveBuildError::SerdeError)?;
+
+        // Save image entry in the `CacheManager` map
+        self.cached_images.insert(image_ref, config_digest);
+
+        Ok(())
+    }
+
+    /// Fetch index file from the cache root path
     fn fetch_index(root_path: &Path) -> Result<CacheIndex> {
         Ok(match File::options()
             .read(true)
@@ -202,13 +301,106 @@ impl CacheManager {
             })?
             .to_string())
     }
+
+    /// Add `docker.io` to references that are missing this registry so `linuxkit` can validate cache presence
+    fn normalize_reference(reference: &str) -> String {
+        let docker_prefix = "docker.io/";
+        if reference.starts_with(docker_prefix) {
+            return reference.to_string();
+        }
+
+        docker_prefix.to_owned() + reference
+    }
 }
 
 #[cfg(test)]
 pub mod tests {
-    use serde_json::Value;
+    use super::*;
+    use std::collections::HashMap;
 
-    use crate::{cache::CacheManager, image};
+    use oci_distribution::manifest::OciImageManifest;
+    use serde_json::Value;
+    use sha2::Digest;
+    use std::env::temp_dir;
+
+    /// This function caches the test image in a temporary directory and returns that directory and
+    /// the cache manager initalized with it as root path.
+    fn setup_temp_cache() -> (PathBuf, CacheManager) {
+        // Use a temporary dir as the cache root path.
+        let root_dir = temp_dir();
+
+        // Use a mock ImageData struct
+        let image_data = image::tests::build_image_data();
+
+        // Initialize the cache manager
+        let mut cache_manager =
+            CacheManager::new(&root_dir).expect("failed to create the  CacheManager");
+
+        // Store the mock image data in the temp cache
+        cache_manager
+            .store_image_data(image::tests::TEST_IMAGE_NAME, &image_data)
+            .expect("failed to store test image to cache");
+
+        (root_dir, cache_manager)
+    }
+
+    #[test]
+    fn test_fetch_index() {
+        let (cache_root_path, _cache_manager) = setup_temp_cache();
+
+        let cache_index =
+            CacheManager::fetch_index(&cache_root_path).expect("Failed to fetch index.json");
+
+        let manifest: OciImageManifest = serde_json::from_str(image::tests::TEST_MANIFEST).unwrap();
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        let manifest_entry = ManifestEntry {
+            media_type: manifest
+                .media_type
+                .as_ref()
+                .unwrap_or(&DEFAULT_MEDIA_TYPE.to_string())
+                .to_string(),
+            size: manifest_bytes.len(),
+            digest: format!("sha256:{:x}", sha2::Sha256::digest(&manifest_bytes)),
+            annotations: HashMap::from([(
+                REF_ANNOTATION.to_string(),
+                CacheManager::normalize_reference(
+                    &image::build_image_reference(image::tests::TEST_IMAGE_NAME)
+                        .unwrap()
+                        .whole(),
+                ),
+            )]),
+        };
+
+        let expected_index = CacheIndex {
+            schema_version: 2,
+            manifests: vec![manifest_entry],
+        };
+
+        assert_eq!(cache_index, expected_index);
+    }
+
+    #[test]
+    fn test_fetch_manifest() {
+        let (cache_root_path, _cache_manager) = setup_temp_cache();
+
+        let manifest_digest = format!(
+            "sha256:{:x}",
+            sha2::Sha256::digest(
+                &image::tests::TEST_MANIFEST
+                    .to_string()
+                    .replace("\n", "")
+                    .replace(" ", "")
+                    .as_bytes()
+            )
+        );
+
+        let cached_manifest = CacheManager::fetch_manifest(&cache_root_path, &manifest_digest)
+            .expect("failed to fetch image manifest from cache");
+
+        let val: serde_json::Value = serde_json::from_str(image::tests::TEST_MANIFEST).unwrap();
+
+        assert_eq!(cached_manifest, val);
+    }
 
     #[test]
     fn test_fetch_config_digest() {
