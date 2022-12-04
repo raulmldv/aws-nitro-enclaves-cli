@@ -505,6 +505,40 @@ impl CacheManager {
             Err(_) => None,
         }
     }
+
+    /// Returns the default root folder path of the cache.
+    ///
+    /// The default cache path is {XDG_DATA_HOME}/.aws-nitro-enclaves-cli/container_cache, and if the env
+    /// variable is not set, {HOME}/.local/share/.aws-nitro-enclaves-cli/container_cache is used.
+    pub fn get_default_cache_root_path() -> Result<PathBuf> {
+        // Try to use XDG_DATA_HOME as default root
+        let root = match std::env::var_os(CACHE_ROOT_FOLDER) {
+            Some(val) => val
+                .into_string()
+                .map_err(|_| EnclaveBuildError::PathError("cache root folder".to_string()))?,
+            // If XDG_DATA_HOME is not set, use {HOME}/.local/share as specified in
+            // https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
+            None => {
+                let home_folder = std::env::var_os("HOME").ok_or_else(|| {
+                    EnclaveBuildError::PathError(
+                        "HOME environment variable is not set.".to_string(),
+                    )
+                })?;
+                format!(
+                    "{}/.local/share/",
+                    home_folder
+                        .into_string()
+                        .map_err(|err| EnclaveBuildError::PathError(format!("{:?}", err)))?
+                )
+            }
+        };
+
+        let mut path = PathBuf::from(root);
+        // Add the additional path to the root
+        path.push(".aws-nitro-enclaves-cli/container_cache");
+
+        Ok(path)
+    }
 }
 
 #[cfg(test)]
@@ -685,5 +719,25 @@ pub mod tests {
             .expect("failed to get image hash from cache");
 
         assert_eq!(image_hash, image::tests::TEST_IMAGE_HASH.to_string());
+    }
+
+    #[test]
+    fn test_get_default_cache_root_path() {
+        let default_path = match std::env::var_os("XDG_DATA_HOME") {
+            Some(val) => PathBuf::from(val.to_str().unwrap().to_string())
+                .join(".aws-nitro-enclaves-cli/container_cache"),
+            None => {
+                let home = std::env::var_os("HOME").expect("HOME env not set");
+                let append = format!(
+                    "{}/.local/share/.aws-nitro-enclaves-cli/container_cache",
+                    home.to_str().unwrap().to_string()
+                );
+                PathBuf::from(home).join(append)
+            }
+        };
+        let calc_path = CacheManager::get_default_cache_root_path()
+            .expect("failed to determine default cache path");
+
+        assert_eq!(default_path, calc_path);
     }
 }
