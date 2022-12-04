@@ -20,7 +20,7 @@ use sha2::Digest;
 use oci_spec::image::ImageConfiguration;
 
 use crate::{
-    image::{self, deserialize_from_reader},
+    image::{self, deserialize_from_reader, ImageDetails},
     EnclaveBuildError, Result,
 };
 
@@ -215,7 +215,7 @@ impl OciStorage {
     }
 
     /// Determines if an image is stored correctly
-    fn check_stored_image(&self, image_name: &str) -> Result<()> {
+    fn check_stored_image(&self, image_name: &str) -> Result<ImageConfiguration> {
         // Check that the index file exists
         let index: OciImageIndex = Self::fetch_index(&self.root_path)?;
 
@@ -249,7 +249,7 @@ impl OciStorage {
             ));
         }
 
-        Ok(())
+        deserialize_from_reader(config_string.as_bytes())
     }
 
     /// Validates that the image layers are stored correctly by checking them with the layer
@@ -399,10 +399,38 @@ impl OciStorage {
 
         docker_prefix.to_owned() + reference
     }
+
+    /// Fetches the image metadata from storage as an ImageDetails struct.
+    ///
+    /// If the data is not correctly stored or a file is missing, it returns an error.
+    ///
+    /// If the image is not stored, it does not attempt to pull the image from remote.
+    pub fn fetch_image_details(&mut self, image_name: &str) -> Result<ImageDetails> {
+        if self.config.is_none() {
+            self.config = Some(self.check_stored_image(image_name)?);
+        }
+        let image_config = self.config.as_ref().ok_or(EnclaveBuildError::ConfigError)?;
+
+        // Add algorithm prefix to the hash
+        let image_hash = format!(
+            "sha256:{:x}",
+            sha2::Sha256::digest(
+                &serde_json::to_vec(&self.config).map_err(EnclaveBuildError::SerdeError)?
+            )
+        );
+
+        Ok(ImageDetails::new(
+            image::build_image_reference(image_name)?.whole(),
+            image_hash,
+            image_config.clone(),
+        ))
+    }
 }
 
 #[cfg(test)]
 pub mod tests {
+    use crate::image::build_image_reference;
+
     use super::*;
     use std::collections::HashMap;
 
@@ -562,5 +590,30 @@ pub mod tests {
         let expected_config = image::tests::TEST_CONFIG.to_string();
 
         assert_eq!(config, expected_config);
+    }
+
+    #[test]
+    fn test_get_image_hash_from_name() {
+        let (_root_path, mut storage) = setup_temp_storage();
+
+        let image_details = storage
+            .fetch_image_details(image::tests::TEST_IMAGE_NAME)
+            .expect("failed to get image hash from storage");
+
+        let expected_config: ImageConfiguration =
+            deserialize_from_reader(image::tests::TEST_CONFIG.as_bytes()).unwrap();
+        let expected_hash = format!(
+            "sha256:{:x}",
+            sha2::Sha256::digest(&expected_config.to_string().unwrap().as_bytes())
+        );
+        let expected_details = ImageDetails::new(
+            build_image_reference(image::tests::TEST_IMAGE_NAME)
+                .unwrap()
+                .whole(),
+            expected_hash,
+            expected_config,
+        );
+
+        assert_eq!(image_details, expected_details);
     }
 }
