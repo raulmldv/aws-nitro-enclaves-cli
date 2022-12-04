@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Digest;
 
-use crate::{image, EnclaveBuildError, Result};
+use crate::{
+    image::{self, ImageDetails},
+    EnclaveBuildError, Result,
+};
 
 /// Root folder for the cache.
 pub const CACHE_ROOT_FOLDER: &str = "XDG_DATA_HOME";
@@ -469,6 +472,39 @@ impl CacheManager {
 
         docker_prefix.to_owned() + reference
     }
+
+    /// Fetches the image metadata from cache as an ImageDetails struct.
+    ///
+    /// If the data is not correctly cached or a file is missing, it returns an error.
+    ///
+    /// If the image is not cached, it does not attempt to pull the image from remote.
+    pub fn fetch_image_details(&self, image_name: &str) -> Result<ImageDetails> {
+        let config_hash = self
+            .get_image_hash_from_name(&Self::normalize_reference(&image_name))
+            .ok_or_else(|| EnclaveBuildError::CacheMissError("Image hash missing".to_string()))?;
+
+        // // Add algorithm prefix to the hash
+        let image_hash = format!("sha256:{}", config_hash);
+        let config_json = self.fetch_config(&config_hash)?;
+
+        Ok(ImageDetails::new(
+            image::build_image_reference(&image_name)?.whole(),
+            image_hash,
+            image::deserialize_from_reader(config_json.as_bytes())?,
+        ))
+    }
+
+    /// Returns the image hash (if available in the CacheManager's hashmap) taking the image
+    /// name as parameter.
+    fn get_image_hash_from_name(&self, name: &str) -> Option<String> {
+        match image::build_image_reference(&name) {
+            Ok(image_ref) => self
+                .cached_images
+                .get(&image_ref.whole())
+                .map(|val| val.to_string()),
+            Err(_) => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -635,5 +671,19 @@ pub mod tests {
         let config_digest = CacheManager::fetch_config_digest(manifest).unwrap();
 
         assert_eq!(image::tests::TEST_IMAGE_HASH.to_string(), config_digest);
+    }
+
+    #[test]
+    fn test_get_image_hash_from_name() {
+        let (_cache_root_path, cache_manager) = setup_temp_cache();
+
+        let image_hash = cache_manager
+            .get_image_hash_from_name(&CacheManager::normalize_reference(
+                image::tests::TEST_IMAGE_NAME,
+            ))
+            .ok_or("")
+            .expect("failed to get image hash from cache");
+
+        assert_eq!(image_hash, image::tests::TEST_IMAGE_HASH.to_string());
     }
 }
