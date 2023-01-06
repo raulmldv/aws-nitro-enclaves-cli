@@ -223,3 +223,43 @@ impl ImageManager for OciImageManager {
         runtime.block_on(act_get_image)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Read;
+
+    /// Test extracted configuration is as expected
+    #[test]
+    fn test_config() {
+        #[cfg(target_arch = "x86_64")]
+        let mut image_manager = OciImageManager::new(
+            "667861386598.dkr.ecr.us-east-1.amazonaws.com/enclaves-samples:vsock-sample-server-x86_64",
+        );
+        #[cfg(target_arch = "aarch64")]
+        let mut image_manager = OciImageManager::new(
+            "667861386598.dkr.ecr.us-east-1.amazonaws.com/enclaves-samples:vsock-sample-server-aarch64",
+        );
+
+        let (cmd_file, env_file) = image_manager.load().unwrap();
+        let mut cmd_file = File::open(cmd_file.path()).unwrap();
+        let mut env_file = File::open(env_file.path()).unwrap();
+
+        let mut cmd = String::new();
+        cmd_file.read_to_string(&mut cmd).unwrap();
+        assert_eq!(
+            cmd,
+            "/bin/sh\n\
+             -c\n\
+             ./vsock-sample server --port 5005\n"
+        );
+
+        let mut env = String::new();
+        env_file.read_to_string(&mut env).unwrap();
+        assert_eq!(
+            env,
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
+        );
+    }
+}
